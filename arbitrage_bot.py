@@ -264,7 +264,7 @@ def handle_command(text, chat_id):
     elif text.startswith('/target '):
         try:
             new_target = float(text.replace('/target ', ''))
-            if 0.3 <= new_target <= 5.0:
+            if 0.3 <= new_target <= 9.0:
                 TARGET_SPREAD_PERCENT = new_target
                 message = f"✅ Цель изменена: {TARGET_SPREAD_PERCENT}%"
                 send_telegram_to_chat(chat_id, message)
