@@ -269,22 +269,22 @@ def handle_command(text, chat_id):
                 message = f"✅ Цель изменена: {TARGET_SPREAD_PERCENT}%"
                 send_telegram_to_chat(chat_id, message)
             else:
-                message = "❌ Значение должно быть от 0.3 до 5.0"
+                message = "❌ Значение должно быть от 0.3 до 9.0"
                 send_telegram_to_chat(chat_id, message)
         except:
-            message = "❌ Неверный формат. Пример: /target 5"
+            message = "❌ Неверный формат. Пример: /target 9"
             send_telegram_to_chat(chat_id, message)
         return True
 
     elif text.startswith('/interval '):
         try:
             new_interval = int(text.replace('/interval ', ''))
-            if 5 <= new_interval <= 300:
+            if 5 <= new_interval <= 600:
                 CHECK_INTERVAL = new_interval
                 message = f"✅ Интервал изменен: {CHECK_INTERVAL} сек"
                 send_telegram_to_chat(chat_id, message)
             else:
-                message = "❌ Значение должно быть от 5 до 300"
+                message = "❌ Значение должно быть от 5 до 600"
                 send_telegram_to_chat(chat_id, message)
         except:
             message = "❌ Неверный формат. Пример: /interval 30"
