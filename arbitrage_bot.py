@@ -26,13 +26,13 @@ def run_health_server():
 threading.Thread(target=run_health_server, daemon=True).start()
 
 # ==================================================
-# НАСТРОЙКИ TELEGRAM (ТОКЕН ИЗ ПЕРЕМЕННОЙ ОКРУЖЕНИЯ)
+# НАСТРОЙКИ TELEGRAM (ТОКЕН ТОЛЬКО ИЗ ПЕРЕМЕННОЙ ОКРУЖЕНИЯ)
 # ==================================================
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
 if not TELEGRAM_TOKEN:
-    raise ValueError("❌ Переменная окружения TELEGRAM_TOKEN не установлена. Добавьте её на Render.")
+    raise ValueError("❌ Переменная окружения TELEGRAM_TOKEN не установлена")
 
-TELEGRAM_CHAT_ID = "1540385721"  # Ваш личный ID
+TELEGRAM_CHAT_ID = "1540385721"
 ENABLE_TELEGRAM = True
 
 # ==================================================
@@ -123,12 +123,24 @@ def mexc_get_spread():
         if spread_long > spread_short:
             data = {
                 'spread': spread_long,
-                'action': 'Купить СПОТ → Продать ФЬЮЧЕРС'
+                'action': 'Купить СПОТ → Продать ФЬЮЧЕРС',
+                'buy_price_spot': spot_ask,
+                'sell_price_future': future_bid,
+                'spot_ask': spot_ask,
+                'spot_bid': spot_bid,
+                'future_ask': future_ask,
+                'future_bid': future_bid
             }
         else:
             data = {
                 'spread': spread_short,
-                'action': 'Купить ФЬЮЧЕРС → Продать СПОТ'
+                'action': 'Купить ФЬЮЧЕРС → Продать СПОТ',
+                'buy_price_future': future_ask,
+                'sell_price_spot': spot_bid,
+                'spot_ask': spot_ask,
+                'spot_bid': spot_bid,
+                'future_ask': future_ask,
+                'future_bid': future_bid
             }
         mexc_current_data = data
         return data
@@ -157,12 +169,23 @@ def bot1_mexc_loop():
                 if spread <= mexc_target:
                     if mexc_last_alert != "target":
                         profit = spread - 0.15
-                        msg = f"🎯 MEXC ЦЕЛЬ!\n{mexc_spot}\nСпред: {spread:.2f}%\nПрибыль: {profit:.2f}%"
+                        msg = f"🎯 <b>MEXC ЦЕЛЬ ДОСТИГНУТА!</b>\n{mexc_spot}\nСпред: {spread:.2f}%\nЧистая прибыль: {profit:.2f}%\n"
+                        if 'buy_price_spot' in data:
+                            msg += f"💰 Купить СПОТ: {data['buy_price_spot']:.8f} USDT\n"
+                            msg += f"💰 Продать ФЬЮЧЕРС: {data['sell_price_future']:.8f} USDT"
+                        elif 'buy_price_future' in data:
+                            msg += f"💰 Купить ФЬЮЧЕРС: {data['buy_price_future']:.8f} USDT\n"
+                            msg += f"💰 Продать СПОТ: {data['sell_price_spot']:.8f} USDT"
                         send_telegram(msg)
                         mexc_last_alert = "target"
                 else:
                     if spread <= mexc_target + 1.0 and mexc_last_alert != "close":
-                        send_telegram(f"🔔 MEXC близко: {spread:.2f}%")
+                        msg = f"🔔 MEXC близко к цели\n{mexc_spot}\nТекущий спред: {spread:.2f}%\n"
+                        if 'buy_price_spot' in data:
+                            msg += f"Купить СПОТ: {data['buy_price_spot']:.8f}\nПродать ФЬЮЧЕРС: {data['sell_price_future']:.8f}"
+                        elif 'buy_price_future' in data:
+                            msg += f"Купить ФЬЮЧЕРС: {data['buy_price_future']:.8f}\nПродать СПОТ: {data['sell_price_spot']:.8f}"
+                        send_telegram(msg)
                         mexc_last_alert = "close"
                     elif spread > mexc_target + 2.0:
                         mexc_last_alert = None
@@ -188,12 +211,24 @@ def bybit_get_spread():
         if spread_long > spread_short:
             data = {
                 'spread': spread_long,
-                'action': 'Купить СПОТ → Продать ФЬЮЧЕРС'
+                'action': 'Купить СПОТ → Продать ФЬЮЧЕРС',
+                'buy_price_spot': spot_ask,
+                'sell_price_future': future_bid,
+                'spot_ask': spot_ask,
+                'spot_bid': spot_bid,
+                'future_ask': future_ask,
+                'future_bid': future_bid
             }
         else:
             data = {
                 'spread': spread_short,
-                'action': 'Купить ФЬЮЧЕРС → Продать СПОТ'
+                'action': 'Купить ФЬЮЧЕРС → Продать СПОТ',
+                'buy_price_future': future_ask,
+                'sell_price_spot': spot_bid,
+                'spot_ask': spot_ask,
+                'spot_bid': spot_bid,
+                'future_ask': future_ask,
+                'future_bid': future_bid
             }
         bybit_current_data = data
         return data
@@ -225,12 +260,23 @@ def bot1_bybit_loop():
                 if spread <= bybit_target:
                     if bybit_last_alert != "target":
                         profit = spread - 0.1
-                        msg = f"🎯 ByBit ЦЕЛЬ!\n{bybit_spot}\nСпред: {spread:.2f}%\nПрибыль: {profit:.2f}%"
+                        msg = f"🎯 <b>ByBit ЦЕЛЬ ДОСТИГНУТА!</b>\n{bybit_spot}\nСпред: {spread:.2f}%\nЧистая прибыль: {profit:.2f}%\n"
+                        if 'buy_price_spot' in data:
+                            msg += f"💰 Купить СПОТ: {data['buy_price_spot']:.8f} USDT\n"
+                            msg += f"💰 Продать ФЬЮЧЕРС: {data['sell_price_future']:.8f} USDT"
+                        elif 'buy_price_future' in data:
+                            msg += f"💰 Купить ФЬЮЧЕРС: {data['buy_price_future']:.8f} USDT\n"
+                            msg += f"💰 Продать СПОТ: {data['sell_price_spot']:.8f} USDT"
                         send_telegram(msg)
                         bybit_last_alert = "target"
                 else:
                     if spread <= bybit_target + 0.5 and bybit_last_alert != "close":
-                        send_telegram(f"🔔 ByBit близко: {spread:.2f}%")
+                        msg = f"🔔 ByBit близко к цели\n{bybit_spot}\nТекущий спред: {spread:.2f}%\n"
+                        if 'buy_price_spot' in data:
+                            msg += f"Купить СПОТ: {data['buy_price_spot']:.8f}\nПродать ФЬЮЧЕРС: {data['sell_price_future']:.8f}"
+                        elif 'buy_price_future' in data:
+                            msg += f"Купить ФЬЮЧЕРС: {data['buy_price_future']:.8f}\nПродать СПОТ: {data['sell_price_spot']:.8f}"
+                        send_telegram(msg)
                         bybit_last_alert = "close"
                     elif spread > bybit_target + 1.0:
                         bybit_last_alert = None
@@ -280,7 +326,9 @@ def bot2_mexc_loop():
                         spread = ((future_bid - spot_ask) / spot_ask) * 100
                         if spread > mexc_min_spread:
                             net = spread - 0.15
-                            msg = f"🚨 MEXC АРБИТРАЖ! {pair['spot']}\nСпред: {spread:.2f}%\nПрибыль: {net:.2f}%"
+                            msg = f"🚨 <b>MEXC АРБИТРАЖ!</b>\n{pair['spot']}\nСпред: {spread:.2f}%\nЧистая прибыль: {net:.2f}%\n"
+                            msg += f"💰 Купить СПОТ: {spot_ask:.8f} USDT\n"
+                            msg += f"💰 Продать ФЬЮЧЕРС: {future_bid:.8f} USDT"
                             send_telegram(msg)
                             mexc_last_signals.append({'pair': pair['spot'], 'spread': spread, 'time': datetime.now().strftime('%H:%M:%S')})
                             if len(mexc_last_signals) > 10: mexc_last_signals.pop(0)
@@ -288,7 +336,9 @@ def bot2_mexc_loop():
                         spread = ((spot_bid - future_ask) / future_ask) * 100
                         if spread > mexc_min_spread:
                             net = spread - 0.15
-                            msg = f"🚨 MEXC АРБИТРАЖ! {pair['spot']}\nСпред: {spread:.2f}%\nПрибыль: {net:.2f}%"
+                            msg = f"🚨 <b>MEXC АРБИТРАЖ!</b>\n{pair['spot']}\nСпред: {spread:.2f}%\nЧистая прибыль: {net:.2f}%\n"
+                            msg += f"💰 Купить ФЬЮЧЕРС: {future_ask:.8f} USDT\n"
+                            msg += f"💰 Продать СПОТ: {spot_bid:.8f} USDT"
                             send_telegram(msg)
                             mexc_last_signals.append({'pair': pair['spot'], 'spread': spread, 'time': datetime.now().strftime('%H:%M:%S')})
                             if len(mexc_last_signals) > 10: mexc_last_signals.pop(0)
@@ -341,7 +391,9 @@ def bot2_bybit_loop():
                         spread = ((future_bid - spot_ask) / spot_ask) * 100
                         if spread > bybit_min_spread:
                             net = spread - 0.1
-                            msg = f"🚨 ByBit АРБИТРАЖ! {pair['spot']}\nСпред: {spread:.2f}%\nПрибыль: {net:.2f}%"
+                            msg = f"🚨 <b>ByBit АРБИТРАЖ!</b>\n{pair['spot']}\nСпред: {spread:.2f}%\nЧистая прибыль: {net:.2f}%\n"
+                            msg += f"💰 Купить СПОТ: {spot_ask:.8f} USDT\n"
+                            msg += f"💰 Продать ФЬЮЧЕРС: {future_bid:.8f} USDT"
                             send_telegram(msg)
                             bybit_last_signals.append({'pair': pair['spot'], 'spread': spread, 'time': datetime.now().strftime('%H:%M:%S')})
                             if len(bybit_last_signals) > 10: bybit_last_signals.pop(0)
@@ -349,7 +401,9 @@ def bot2_bybit_loop():
                         spread = ((spot_bid - future_ask) / future_ask) * 100
                         if spread > bybit_min_spread:
                             net = spread - 0.1
-                            msg = f"🚨 ByBit АРБИТРАЖ! {pair['spot']}\nСпред: {spread:.2f}%\nПрибыль: {net:.2f}%"
+                            msg = f"🚨 <b>ByBit АРБИТРАЖ!</b>\n{pair['spot']}\nСпред: {spread:.2f}%\nЧистая прибыль: {net:.2f}%\n"
+                            msg += f"💰 Купить ФЬЮЧЕРС: {future_ask:.8f} USDT\n"
+                            msg += f"💰 Продать СПОТ: {spot_bid:.8f} USDT"
                             send_telegram(msg)
                             bybit_last_signals.append({'pair': pair['spot'], 'spread': spread, 'time': datetime.now().strftime('%H:%M:%S')})
                             if len(bybit_last_signals) > 10: bybit_last_signals.pop(0)
@@ -362,7 +416,7 @@ def bot2_bybit_loop():
             time.sleep(10)
 
 # ==================================================
-# ОБРАБОТЧИК КОМАНД
+# ОБРАБОТЧИК КОМАНД (статусы с ценами)
 # ==================================================
 def handle_commands():
     global bot1_mexc_running, bot1_bybit_running, bot2_mexc_running, bot2_bybit_running
@@ -385,6 +439,7 @@ def handle_commands():
                 if not text.startswith('/'):
                     continue
 
+                # Глобальные
                 if text == '/start':
                     bot1_mexc_running = bot1_bybit_running = bot2_mexc_running = bot2_bybit_running = True
                     send_telegram_to_chat(chat_id, "✅ Все боты запущены")
@@ -446,14 +501,22 @@ def handle_commands():
                         if mexc_current_data:
                             spread = mexc_current_data['spread']
                             action = mexc_current_data['action']
+                            spot_ask = mexc_current_data.get('spot_ask', 'нет')
+                            spot_bid = mexc_current_data.get('spot_bid', 'нет')
+                            future_ask = mexc_current_data.get('future_ask', 'нет')
+                            future_bid = mexc_current_data.get('future_bid', 'нет')
                         else:
                             data = mexc_get_spread()
                             if data:
                                 spread = data['spread']
                                 action = data['action']
+                                spot_ask = data.get('spot_ask', 'нет')
+                                spot_bid = data.get('spot_bid', 'нет')
+                                future_ask = data.get('future_ask', 'нет')
+                                future_bid = data.get('future_bid', 'нет')
                             else:
-                                spread = "нет данных"
-                                action = "нет данных"
+                                spread = action = "нет данных"
+                                spot_ask = spot_bid = future_ask = future_bid = "нет"
                         msg = f"""
 📊 <b>СТАТУС MEXC (бот #1)</b>
 ━━━━━━━━━━━━━━━━━━━━━
@@ -462,6 +525,12 @@ def handle_commands():
 <b>Пара фьюч:</b> {mexc_future}
 <b>Цель (спред):</b> {mexc_target}%
 <b>Интервал:</b> {mexc_interval} сек
+
+📈 <b>Цены:</b>
+Спот ASK: {spot_ask if spot_ask != 'нет' else '—'} USDT
+Спот BID: {spot_bid if spot_bid != 'нет' else '—'} USDT
+Фьюч ASK: {future_ask if future_ask != 'нет' else '—'} USDT
+Фьюч BID: {future_bid if future_bid != 'нет' else '—'} USDT
 
 🔄 <b>Арбитраж:</b>
 Текущий спред: {spread}%
@@ -531,14 +600,22 @@ def handle_commands():
                         if bybit_current_data:
                             spread = bybit_current_data['spread']
                             action = bybit_current_data['action']
+                            spot_ask = bybit_current_data.get('spot_ask', 'нет')
+                            spot_bid = bybit_current_data.get('spot_bid', 'нет')
+                            future_ask = bybit_current_data.get('future_ask', 'нет')
+                            future_bid = bybit_current_data.get('future_bid', 'нет')
                         else:
                             data = bybit_get_spread()
                             if data:
                                 spread = data['spread']
                                 action = data['action']
+                                spot_ask = data.get('spot_ask', 'нет')
+                                spot_bid = data.get('spot_bid', 'нет')
+                                future_ask = data.get('future_ask', 'нет')
+                                future_bid = data.get('future_bid', 'нет')
                             else:
-                                spread = "нет данных"
-                                action = "нет данных"
+                                spread = action = "нет данных"
+                                spot_ask = spot_bid = future_ask = future_bid = "нет"
                         msg = f"""
 📊 <b>СТАТУС ByBit (бот #1)</b>
 ━━━━━━━━━━━━━━━━━━━━━
@@ -547,6 +624,12 @@ def handle_commands():
 <b>Пара фьюч:</b> {bybit_future}
 <b>Цель (спред):</b> {bybit_target}%
 <b>Интервал:</b> {bybit_interval} сек
+
+📈 <b>Цены:</b>
+Спот ASK: {spot_ask if spot_ask != 'нет' else '—'} USDT
+Спот BID: {spot_bid if spot_bid != 'нет' else '—'} USDT
+Фьюч ASK: {future_ask if future_ask != 'нет' else '—'} USDT
+Фьюч BID: {future_bid if future_bid != 'нет' else '—'} USDT
 
 🔄 <b>Арбитраж:</b>
 Текущий спред: {spread}%
@@ -564,7 +647,7 @@ def handle_commands():
                     send_telegram_to_chat(chat_id, msg)
                     continue
 
-                # Сканеры
+                # MEXC сканер
                 if text == '/start2m':
                     bot2_mexc_running = True
                     send_telegram_to_chat(chat_id, "✅ Сканер MEXC запущен")
@@ -616,6 +699,7 @@ def handle_commands():
                         send_telegram_to_chat(chat_id, msg)
                     continue
 
+                # ByBit сканер
                 if text == '/start2b':
                     bot2_bybit_running = True
                     send_telegram_to_chat(chat_id, "✅ Сканер ByBit запущен")
@@ -703,7 +787,7 @@ def handle_commands():
 # ==================================================
 if __name__ == "__main__":
     print("="*60)
-    print("ОБЪЕДИНЁННЫЙ АРБИТРАЖНЫЙ БОТ (MEXC + ByBit) – БЕЗ ПАРОЛЯ, СТАТУСЫ УПРОЩЕНЫ")
+    print("ОБЪЕДИНЁННЫЙ АРБИТРАЖНЫЙ БОТ (MEXC + ByBit) – БЕЗ ПАРОЛЯ, С ЦЕНАМИ В СИГНАЛАХ")
     print("="*60)
     exchange_mexc = ccxt.mexc({'enableRateLimit': True})
     exchange_bybit = ccxt.bybit({'enableRateLimit': True, 'options': {'defaultType': 'swap'}})
