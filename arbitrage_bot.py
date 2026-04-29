@@ -28,33 +28,31 @@ threading.Thread(target=run_health_server, daemon=True).start()
 # ==================================================
 # НАСТРОЙКИ TELEGRAM
 # ==================================================
-TELEGRAM_TOKEN = "8751313465:AAEKdudEaxKwNcwpB2FSThSRkut7L4KRvSI"
-TELEGRAM_CHAT_ID = "1540385721"          # Ваш ID (только для уведомлений, не для проверки доступа)
+TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN', "8751313465:AAEKdudEaxKwNcwpB2FSThSRkut7L4KRvSI")  # Лучше через переменную окружения
+TELEGRAM_CHAT_ID = "1540385721"
 ENABLE_TELEGRAM = True
 
 # ==================================================
-# ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ДЛЯ УПРАВЛЕНИЯ БОТАМИ
+# ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ
 # ==================================================
-# Флаги работы каждого бота
-bot1_mexc_running = True      # первый бот MEXC (одна пара)
-bot1_bybit_running = True     # первый бот ByBit (одна пара)
-bot2_mexc_running = True      # второй бот MEXC (сканер всех пар)
-bot2_bybit_running = True     # второй бот ByBit (сканер всех пар)
+bot1_mexc_running = True
+bot1_bybit_running = True
+bot2_mexc_running = True
+bot2_bybit_running = True
 
-# Объекты бирж (будут созданы в потоках)
 exchange_mexc = None
 exchange_bybit = None
 
-# Данные для первого бота MEXC
+# MEXC первый бот
 mexc_spot = "BTC/USDT"
 mexc_future = "BTC/USDT:USDT"
 mexc_target = 5.0
 mexc_interval = 120
 mexc_last_alert = None
 mexc_spread_history = []
-mexc_current_data = None   # будет хранить последний результат get_spread
+mexc_current_data = None
 
-# Данные для первого бота ByBit
+# ByBit первый бот
 bybit_spot = "BTC/USDT"
 bybit_future = "BTC/USDT:USDT"
 bybit_target = 0.5
@@ -63,12 +61,12 @@ bybit_last_alert = None
 bybit_spread_history = []
 bybit_current_data = None
 
-# Данные для второго бота MEXC (сканер)
+# MEXC сканер
 mexc_min_spread = 2.0
 mexc_scan_interval = 10
 mexc_last_signals = []
 
-# Данные для второго бота ByBit (сканер)
+# ByBit сканер
 bybit_min_spread = 0.5
 bybit_scan_interval = 10
 bybit_last_signals = []
@@ -82,7 +80,6 @@ def send_telegram(message):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         requests.post(url, json={'chat_id': TELEGRAM_CHAT_ID, 'text': message}, timeout=10)
-        print("✅ Telegram отправлен")
     except Exception as e:
         print(f"❌ Telegram error: {e}")
 
@@ -107,7 +104,7 @@ def get_updates(offset=None):
         return []
 
 # ==================================================
-# ЛОГИКА ПЕРВОГО БОТА (ОДНА ПАРА) ДЛЯ MEXC
+# ЛОГИКА MEXC (первый бот)
 # ==================================================
 def mexc_get_spread():
     global exchange_mexc, mexc_spot, mexc_future, mexc_current_data
@@ -146,7 +143,7 @@ def mexc_get_spread():
 
 def bot1_mexc_loop():
     global bot1_mexc_running, mexc_target, mexc_interval, mexc_last_alert, mexc_spread_history, mexc_current_data, exchange_mexc
-    print("🚀 Запуск первого бота MEXC (одна пара)")
+    print("🚀 Запуск первого бота MEXC")
     send_telegram("✅ Первый бот MEXC запущен")
     exchange_mexc = ccxt.mexc({'enableRateLimit': True})
     exchange_mexc.load_markets()
@@ -180,7 +177,7 @@ def bot1_mexc_loop():
             time.sleep(mexc_interval)
 
 # ==================================================
-# ЛОГИКА ПЕРВОГО БОТА ДЛЯ BYBIT
+# ЛОГИКА BYBIT (первый бот)
 # ==================================================
 def bybit_get_spread():
     global exchange_bybit, bybit_spot, bybit_future, bybit_current_data
@@ -219,7 +216,7 @@ def bybit_get_spread():
 
 def bot1_bybit_loop():
     global bot1_bybit_running, bybit_target, bybit_interval, bybit_last_alert, bybit_spread_history, bybit_current_data, exchange_bybit
-    print("🚀 Запуск первого бота ByBit (одна пара)")
+    print("🚀 Запуск первого бота ByBit")
     send_telegram("✅ Первый бот ByBit запущен")
     exchange_bybit = ccxt.bybit({
         'enableRateLimit': True,
@@ -256,7 +253,7 @@ def bot1_bybit_loop():
             time.sleep(bybit_interval)
 
 # ==================================================
-# ВТОРОЙ БОТ (СКАНЕР ВСЕХ ПАР) ДЛЯ MEXC
+# СКАНЕР MEXC
 # ==================================================
 def load_mexc_pairs():
     global exchange_mexc
@@ -272,7 +269,7 @@ def load_mexc_pairs():
 
 def bot2_mexc_loop():
     global bot2_mexc_running, mexc_min_spread, mexc_scan_interval, mexc_last_signals, exchange_mexc
-    print("🚀 Запуск сканера MEXC (бот #2)")
+    print("🚀 Запуск сканера MEXC")
     send_telegram("✅ Сканер MEXC запущен")
     exchange_mexc = exchange_mexc or ccxt.mexc({'enableRateLimit': True})
     trading_pairs = load_mexc_pairs()
@@ -317,7 +314,7 @@ def bot2_mexc_loop():
             time.sleep(10)
 
 # ==================================================
-# ВТОРОЙ БОТ (СКАНЕР) ДЛЯ BYBIT
+# СКАНЕР BYBIT
 # ==================================================
 def load_bybit_pairs():
     global exchange_bybit
@@ -333,7 +330,7 @@ def load_bybit_pairs():
 
 def bot2_bybit_loop():
     global bot2_bybit_running, bybit_min_spread, bybit_scan_interval, bybit_last_signals, exchange_bybit
-    print("🚀 Запуск сканера ByBit (бот #2)")
+    print("🚀 Запуск сканера ByBit")
     send_telegram("✅ Сканер ByBit запущен")
     exchange_bybit = exchange_bybit or ccxt.bybit({'enableRateLimit': True, 'options': {'defaultType': 'swap'}})
     trading_pairs = load_bybit_pairs()
@@ -378,7 +375,7 @@ def bot2_bybit_loop():
             time.sleep(10)
 
 # ==================================================
-# ОБРАБОТЧИК КОМАНД TELEGRAM (БЕЗ ПАРОЛЯ) С УЛУЧШЕННЫМИ СТАТУСАМИ
+# ОБРАБОТЧИК КОМАНД (без пароля, статусы без цен)
 # ==================================================
 def handle_commands():
     global bot1_mexc_running, bot1_bybit_running, bot2_mexc_running, bot2_bybit_running
@@ -401,7 +398,7 @@ def handle_commands():
                 if not text.startswith('/'):
                     continue
 
-                # --- Глобальные команды ---
+                # Глобальные
                 if text == '/start':
                     bot1_mexc_running = bot1_bybit_running = bot2_mexc_running = bot2_bybit_running = True
                     send_telegram_to_chat(chat_id, "✅ Все боты запущены")
@@ -411,7 +408,7 @@ def handle_commands():
                     send_telegram_to_chat(chat_id, "⏸ Все боты остановлены")
                     continue
 
-                # --- Команды для первого бота MEXC (суффикс 1m) ---
+                # MEXC первый бот
                 if text == '/start1m':
                     bot1_mexc_running = True
                     send_telegram_to_chat(chat_id, "✅ Первый бот MEXC запущен")
@@ -460,26 +457,17 @@ def handle_commands():
                 if text == '/status1m':
                     status = "✅ работает" if bot1_mexc_running else "⏸ остановлен"
                     try:
-                        # Берём актуальные данные из mexc_current_data (заполняется в mexc_get_spread)
                         if mexc_current_data:
                             spread = mexc_current_data['spread']
                             action = mexc_current_data['action']
-                            spot_ask = mexc_current_data['spot_ask']
-                            spot_bid = mexc_current_data['spot_bid']
-                            future_ask = mexc_current_data['future_ask']
-                            future_bid = mexc_current_data['future_bid']
                         else:
-                            # Если данных ещё нет, попробуем получить свежие
                             data = mexc_get_spread()
                             if data:
                                 spread = data['spread']
                                 action = data['action']
-                                spot_ask = data['spot_ask']
-                                spot_bid = data['spot_bid']
-                                future_ask = data['future_ask']
-                                future_bid = data['future_bid']
                             else:
-                                spread = action = spot_ask = spot_bid = future_ask = future_bid = "нет данных"
+                                spread = "нет данных"
+                                action = "нет данных"
                         msg = f"""
 📊 <b>СТАТУС MEXC (бот #1)</b>
 ━━━━━━━━━━━━━━━━━━━━━
@@ -488,12 +476,6 @@ def handle_commands():
 <b>Пара фьюч:</b> {mexc_future}
 <b>Цель (спред):</b> {mexc_target}%
 <b>Интервал:</b> {mexc_interval} сек
-
-📈 <b>Текущие цены:</b>
-Спот ASK: {spot_ask if spot_ask != 'нет данных' else '—'} USDT
-Спот BID: {spot_bid if spot_bid != 'нет данных' else '—'} USDT
-Фьюч ASK: {future_ask if future_ask != 'нет данных' else '—'} USDT
-Фьюч BID: {future_bid if future_bid != 'нет данных' else '—'} USDT
 
 🔄 <b>Арбитраж:</b>
 Текущий спред: {spread}%
@@ -507,11 +489,11 @@ def handle_commands():
                         else:
                             msg += "⏳ Данные ещё не получены"
                     except Exception as e:
-                        msg = f"❌ Ошибка получения данных: {e}"
+                        msg = f"❌ Ошибка: {e}"
                     send_telegram_to_chat(chat_id, msg)
                     continue
 
-                # --- Команды для первого бота ByBit (суффикс 1b) ---
+                # ByBit первый бот
                 if text == '/start1b':
                     bot1_bybit_running = True
                     send_telegram_to_chat(chat_id, "✅ Первый бот ByBit запущен")
@@ -563,21 +545,14 @@ def handle_commands():
                         if bybit_current_data:
                             spread = bybit_current_data['spread']
                             action = bybit_current_data['action']
-                            spot_ask = bybit_current_data['spot_ask']
-                            spot_bid = bybit_current_data['spot_bid']
-                            future_ask = bybit_current_data['future_ask']
-                            future_bid = bybit_current_data['future_bid']
                         else:
                             data = bybit_get_spread()
                             if data:
                                 spread = data['spread']
                                 action = data['action']
-                                spot_ask = data['spot_ask']
-                                spot_bid = data['spot_bid']
-                                future_ask = data['future_ask']
-                                future_bid = data['future_bid']
                             else:
-                                spread = action = spot_ask = spot_bid = future_ask = future_bid = "нет данных"
+                                spread = "нет данных"
+                                action = "нет данных"
                         msg = f"""
 📊 <b>СТАТУС ByBit (бот #1)</b>
 ━━━━━━━━━━━━━━━━━━━━━
@@ -586,12 +561,6 @@ def handle_commands():
 <b>Пара фьюч:</b> {bybit_future}
 <b>Цель (спред):</b> {bybit_target}%
 <b>Интервал:</b> {bybit_interval} сек
-
-📈 <b>Текущие цены:</b>
-Спот ASK: {spot_ask if spot_ask != 'нет данных' else '—'} USDT
-Спот BID: {spot_bid if spot_bid != 'нет данных' else '—'} USDT
-Фьюч ASK: {future_ask if future_ask != 'нет данных' else '—'} USDT
-Фьюч BID: {future_bid if future_bid != 'нет данных' else '—'} USDT
 
 🔄 <b>Арбитраж:</b>
 Текущий спред: {spread}%
@@ -605,11 +574,11 @@ def handle_commands():
                         else:
                             msg += "⏳ Данные ещё не получены"
                     except Exception as e:
-                        msg = f"❌ Ошибка получения данных: {e}"
+                        msg = f"❌ Ошибка: {e}"
                     send_telegram_to_chat(chat_id, msg)
                     continue
 
-                # --- Команды для второго бота MEXC (сканер) суффикс 2m ---
+                # MEXC сканер
                 if text == '/start2m':
                     bot2_mexc_running = True
                     send_telegram_to_chat(chat_id, "✅ Сканер MEXC запущен")
@@ -661,7 +630,7 @@ def handle_commands():
                         send_telegram_to_chat(chat_id, msg)
                     continue
 
-                # --- Команды для второго бота ByBit (сканер) суффикс 2b ---
+                # ByBit сканер
                 if text == '/start2b':
                     bot2_bybit_running = True
                     send_telegram_to_chat(chat_id, "✅ Сканер ByBit запущен")
@@ -713,10 +682,9 @@ def handle_commands():
                         send_telegram_to_chat(chat_id, msg)
                     continue
 
-                # --- Помощь ---
                 if text == '/help':
                     help_txt = """
-<b>🤖 Управление объединённым ботом (MEXC + ByBit) – открытый доступ</b>
+<b>🤖 Управление объединённым ботом (MEXC + ByBit)</b>
 
 <b>Глобальные:</b>
 /start – запустить все боты
@@ -724,29 +692,21 @@ def handle_commands():
 
 <b>Первый бот (одна пара) MEXC:</b>
 /start1m, /stop1m
-/set1m BTC – сменить пару
-/target1m 5 – цель (%)
-/interval1m 120 – интервал (сек)
-/status1m – полный статус
+/set1m BTC, /target1m 5, /interval1m 120, /status1m
 
 <b>Первый бот (одна пара) ByBit:</b>
 /start1b, /stop1b
 /set1b BTC, /target1b 0.5, /interval1b 120, /status1b
 
-<b>Второй бот (сканер) MEXC:</b>
-/start2m, /stop2m, /status2m
-/threshold2m 2.0 – мин. спред (%)
-/interval2m 60 – интервал между циклами (сек)
-/last2m – последние 5 сигналов
+<b>Сканер MEXC:</b>
+/start2m, /stop2m, /status2m, /threshold2m 2.0, /interval2m 60, /last2m
 
-<b>Второй бот (сканер) ByBit:</b>
-/start2b, /stop2b, /status2b
-/threshold2b 0.5, /interval2b 60, /last2b
+<b>Сканер ByBit:</b>
+/start2b, /stop2b, /status2b, /threshold2b 0.5, /interval2b 60, /last2b
 """
                     send_telegram_to_chat(chat_id, help_txt)
                     continue
 
-                # Неизвестная команда
                 send_telegram_to_chat(chat_id, "❌ Неизвестная команда. /help")
             time.sleep(1)
         except Exception as e:
@@ -754,26 +714,21 @@ def handle_commands():
             time.sleep(5)
 
 # ==================================================
-# ЗАПУСК ВСЕХ ПОТОКОВ
+# ЗАПУСК
 # ==================================================
 if __name__ == "__main__":
     print("="*60)
-    print("ОБЪЕДИНЁННЫЙ АРБИТРАЖНЫЙ БОТ (MEXC + ByBit) – БЕЗ ПАРОЛЯ")
+    print("ОБЪЕДИНЁННЫЙ АРБИТРАЖНЫЙ БОТ (MEXC + ByBit) – БЕЗ ПАРОЛЯ, СТАТУСЫ УПРОЩЕНЫ")
     print("="*60)
-    # Создаём объекты бирж (глобальные) для последующего использования в командах
     exchange_mexc = ccxt.mexc({'enableRateLimit': True})
     exchange_bybit = ccxt.bybit({'enableRateLimit': True, 'options': {'defaultType': 'swap'}})
-    # Загружаем рынки (асинхронно, но в фоне)
     def load_markets_async():
         global exchange_mexc, exchange_bybit
         exchange_mexc.load_markets()
         exchange_bybit.load_markets()
     threading.Thread(target=load_markets_async, daemon=True).start()
-    
-    # Запускаем все потоки ботов
     threading.Thread(target=bot1_mexc_loop, daemon=True).start()
     threading.Thread(target=bot1_bybit_loop, daemon=True).start()
     threading.Thread(target=bot2_mexc_loop, daemon=True).start()
     threading.Thread(target=bot2_bybit_loop, daemon=True).start()
-    # Запускаем обработчик команд
     handle_commands()
