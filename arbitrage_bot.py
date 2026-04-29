@@ -26,10 +26,13 @@ def run_health_server():
 threading.Thread(target=run_health_server, daemon=True).start()
 
 # ==================================================
-# НАСТРОЙКИ TELEGRAM
+# НАСТРОЙКИ TELEGRAM (ТОКЕН ИЗ ПЕРЕМЕННОЙ ОКРУЖЕНИЯ)
 # ==================================================
-TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN', "8751313465:AAEKdudEaxKwNcwpB2FSThSRkut7L4KRvSI")  # Лучше через переменную окружения
-TELEGRAM_CHAT_ID = "1540385721"
+TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
+if not TELEGRAM_TOKEN:
+    raise ValueError("❌ Переменная окружения TELEGRAM_TOKEN не установлена. Добавьте её на Render.")
+
+TELEGRAM_CHAT_ID = "1540385721"  # Ваш личный ID
 ENABLE_TELEGRAM = True
 
 # ==================================================
@@ -120,20 +123,12 @@ def mexc_get_spread():
         if spread_long > spread_short:
             data = {
                 'spread': spread_long,
-                'action': 'Купить СПОТ → Продать ФЬЮЧЕРС',
-                'spot_ask': spot_ask,
-                'spot_bid': spot_bid,
-                'future_ask': future_ask,
-                'future_bid': future_bid
+                'action': 'Купить СПОТ → Продать ФЬЮЧЕРС'
             }
         else:
             data = {
                 'spread': spread_short,
-                'action': 'Купить ФЬЮЧЕРС → Продать СПОТ',
-                'spot_ask': spot_ask,
-                'spot_bid': spot_bid,
-                'future_ask': future_ask,
-                'future_bid': future_bid
+                'action': 'Купить ФЬЮЧЕРС → Продать СПОТ'
             }
         mexc_current_data = data
         return data
@@ -193,20 +188,12 @@ def bybit_get_spread():
         if spread_long > spread_short:
             data = {
                 'spread': spread_long,
-                'action': 'Купить СПОТ → Продать ФЬЮЧЕРС',
-                'spot_ask': spot_ask,
-                'spot_bid': spot_bid,
-                'future_ask': future_ask,
-                'future_bid': future_bid
+                'action': 'Купить СПОТ → Продать ФЬЮЧЕРС'
             }
         else:
             data = {
                 'spread': spread_short,
-                'action': 'Купить ФЬЮЧЕРС → Продать СПОТ',
-                'spot_ask': spot_ask,
-                'spot_bid': spot_bid,
-                'future_ask': future_ask,
-                'future_bid': future_bid
+                'action': 'Купить ФЬЮЧЕРС → Продать СПОТ'
             }
         bybit_current_data = data
         return data
@@ -375,7 +362,7 @@ def bot2_bybit_loop():
             time.sleep(10)
 
 # ==================================================
-# ОБРАБОТЧИК КОМАНД (без пароля, статусы без цен)
+# ОБРАБОТЧИК КОМАНД
 # ==================================================
 def handle_commands():
     global bot1_mexc_running, bot1_bybit_running, bot2_mexc_running, bot2_bybit_running
@@ -398,7 +385,6 @@ def handle_commands():
                 if not text.startswith('/'):
                     continue
 
-                # Глобальные
                 if text == '/start':
                     bot1_mexc_running = bot1_bybit_running = bot2_mexc_running = bot2_bybit_running = True
                     send_telegram_to_chat(chat_id, "✅ Все боты запущены")
@@ -578,7 +564,7 @@ def handle_commands():
                     send_telegram_to_chat(chat_id, msg)
                     continue
 
-                # MEXC сканер
+                # Сканеры
                 if text == '/start2m':
                     bot2_mexc_running = True
                     send_telegram_to_chat(chat_id, "✅ Сканер MEXC запущен")
@@ -630,7 +616,6 @@ def handle_commands():
                         send_telegram_to_chat(chat_id, msg)
                     continue
 
-                # ByBit сканер
                 if text == '/start2b':
                     bot2_bybit_running = True
                     send_telegram_to_chat(chat_id, "✅ Сканер ByBit запущен")
