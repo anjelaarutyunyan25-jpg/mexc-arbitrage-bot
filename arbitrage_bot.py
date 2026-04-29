@@ -36,10 +36,10 @@ TELEGRAM_CHAT_ID = "1540385721"
 ENABLE_TELEGRAM = True
 
 # ==================================================
-# ПЕРВЫЙ БОТ (АРБИТРАЖ ПО ОДНОЙ ПАРЕ) – БЕЗ ИЗМЕНЕНИЙ, КРОМЕ ФЛАГА УПРАВЛЕНИЯ
+# ПЕРВЫЙ БОТ (АРБИТРАЖ ПО ОДНОЙ ПАРЕ) – БЕЗ ИЗМЕНЕНИЙ
 # ==================================================
 
-# Глобальные переменные первого бота (как в исходном коде)
+# Глобальные переменные первого бота
 spot_symbol = "BTC/USDT"
 futures_symbol = "BTC/USDT:USDT"
 target_spread_percent = 5
@@ -48,7 +48,7 @@ alert_levels = [1.0, 0.8, 0.6, 0.5]
 
 last_alert = None
 current_spread_data = None
-bot1_running = True   # добавлен флаг для остановки/запуска цикла
+bot1_running = True
 spread_history = []
 exchange = None
 
@@ -101,7 +101,7 @@ def handle_command_bot1(text, chat_id):
     text = text.strip().lower()
     print(f"📩 БОТ1 команда: {text}")
 
-    # Клавиатура (как была)
+    # Клавиатура
     main_keyboard = {
         "keyboard": [
             ["/status", "/check"],
@@ -293,7 +293,6 @@ def handle_command_bot1(text, chat_id):
             send_telegram_to_chat(chat_id, f"❌ Неизвестная команда: {text}\n/help", reply_markup=main_keyboard)
         return False
 
-# Функция основного цикла первого бота
 def bot1_loop():
     global exchange, current_spread_data, last_alert, spread_history, bot1_running
     global spot_symbol, futures_symbol, target_spread_percent, check_interval, alert_levels
@@ -614,7 +613,7 @@ class ScannerBot:
                 time.sleep(10)
 
 # ==================================================
-# ГЛАВНЫЙ ОБРАБОТЧИК ТЕЛЕГРАМ (РАЗДЕЛЯЕТ КОМАНДЫ)
+# ГЛАВНЫЙ ОБРАБОТЧИК ТЕЛЕГРАМ (ИСПРАВЛЕННЫЙ)
 # ==================================================
 def telegram_polling(bot2):
     global bot1_running
@@ -641,15 +640,28 @@ def telegram_polling(bot2):
                             send_telegram_to_chat(chat_id, "⏸ ОБА БОТА ОСТАНОВЛЕНЫ")
                             continue
                         
-                        # Команды для второго бота (с суффиксом 2)
-                        if text.endswith('2'):
-                            cmd = text[:-1]  # убираем '2'
-                            if cmd.startswith('/'):
-                                bot2.handle_command(cmd, chat_id)
+                        # Разделяем команду на имя и аргументы
+                        parts = text.split()
+                        cmd_name = parts[0]  # например "/threshold2" или "/stop2"
+                        args = ' '.join(parts[1:]) if len(parts) > 1 else ''
+                        
+                        # Проверяем суффикс команды
+                        if cmd_name.endswith('2'):
+                            base_cmd = cmd_name[:-1]  # убираем '2'
+                            if args:
+                                full_cmd = f"{base_cmd} {args}"
                             else:
-                                send_telegram_to_chat(chat_id, "❌ Неверная команда")
+                                full_cmd = base_cmd
+                            bot2.handle_command(full_cmd, chat_id)
+                        elif cmd_name.endswith('1'):
+                            base_cmd = cmd_name[:-1]
+                            if args:
+                                full_cmd = f"{base_cmd} {args}"
+                            else:
+                                full_cmd = base_cmd
+                            handle_command_bot1(full_cmd, chat_id)
                         else:
-                            # Все остальные команды (без суффикса) идут первому боту
+                            # Команда без суффикса – отдаём первому боту
                             handle_command_bot1(text, chat_id)
             time.sleep(1)
         except Exception as e:
