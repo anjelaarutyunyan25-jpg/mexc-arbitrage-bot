@@ -45,14 +45,14 @@ bot2_bybit_running = True     # второй бот ByBit (сканер всех
 exchange_mexc = None
 exchange_bybit = None
 
-# Данные для первого бота MEXC (одна пары)
+# Данные для первого бота MEXC
 mexc_spot = "BTC/USDT"
 mexc_future = "BTC/USDT:USDT"
 mexc_target = 5.0
 mexc_interval = 120
 mexc_last_alert = None
 mexc_spread_history = []
-mexc_current_data = None
+mexc_current_data = None   # будет хранить последний результат get_spread
 
 # Данные для первого бота ByBit
 bybit_spot = "BTC/USDT"
@@ -110,7 +110,7 @@ def get_updates(offset=None):
 # ЛОГИКА ПЕРВОГО БОТА (ОДНА ПАРА) ДЛЯ MEXC
 # ==================================================
 def mexc_get_spread():
-    global exchange_mexc, mexc_spot, mexc_future
+    global exchange_mexc, mexc_spot, mexc_future, mexc_current_data
     try:
         spot = exchange_mexc.fetch_order_book(mexc_spot)
         future = exchange_mexc.fetch_order_book(mexc_future)
@@ -121,9 +121,25 @@ def mexc_get_spread():
         spread_long = ((future_bid - spot_ask) / spot_ask) * 100
         spread_short = ((spot_bid - future_ask) / future_ask) * 100
         if spread_long > spread_short:
-            return {'spread': spread_long, 'action': 'Купить СПОТ → Продать ФЬЮЧЕРС'}
+            data = {
+                'spread': spread_long,
+                'action': 'Купить СПОТ → Продать ФЬЮЧЕРС',
+                'spot_ask': spot_ask,
+                'spot_bid': spot_bid,
+                'future_ask': future_ask,
+                'future_bid': future_bid
+            }
         else:
-            return {'spread': spread_short, 'action': 'Купить ФЬЮЧЕРС → Продать СПОТ'}
+            data = {
+                'spread': spread_short,
+                'action': 'Купить ФЬЮЧЕРС → Продать СПОТ',
+                'spot_ask': spot_ask,
+                'spot_bid': spot_bid,
+                'future_ask': future_ask,
+                'future_bid': future_bid
+            }
+        mexc_current_data = data
+        return data
     except Exception as e:
         print(f"MEXC ошибка спреда: {e}")
         return None
@@ -141,7 +157,6 @@ def bot1_mexc_loop():
         try:
             data = mexc_get_spread()
             if data:
-                mexc_current_data = data
                 spread = data['spread']
                 mexc_spread_history.append(spread)
                 if len(mexc_spread_history) > 20:
@@ -168,7 +183,7 @@ def bot1_mexc_loop():
 # ЛОГИКА ПЕРВОГО БОТА ДЛЯ BYBIT
 # ==================================================
 def bybit_get_spread():
-    global exchange_bybit, bybit_spot, bybit_future
+    global exchange_bybit, bybit_spot, bybit_future, bybit_current_data
     try:
         spot = exchange_bybit.fetch_order_book(bybit_spot)
         future = exchange_bybit.fetch_order_book(bybit_future)
@@ -179,9 +194,25 @@ def bybit_get_spread():
         spread_long = ((future_bid - spot_ask) / spot_ask) * 100
         spread_short = ((spot_bid - future_ask) / future_ask) * 100
         if spread_long > spread_short:
-            return {'spread': spread_long, 'action': 'Купить СПОТ → Продать ФЬЮЧЕРС'}
+            data = {
+                'spread': spread_long,
+                'action': 'Купить СПОТ → Продать ФЬЮЧЕРС',
+                'spot_ask': spot_ask,
+                'spot_bid': spot_bid,
+                'future_ask': future_ask,
+                'future_bid': future_bid
+            }
         else:
-            return {'spread': spread_short, 'action': 'Купить ФЬЮЧЕРС → Продать СПОТ'}
+            data = {
+                'spread': spread_short,
+                'action': 'Купить ФЬЮЧЕРС → Продать СПОТ',
+                'spot_ask': spot_ask,
+                'spot_bid': spot_bid,
+                'future_ask': future_ask,
+                'future_bid': future_bid
+            }
+        bybit_current_data = data
+        return data
     except Exception as e:
         print(f"ByBit ошибка спреда: {e}")
         return None
@@ -202,7 +233,6 @@ def bot1_bybit_loop():
         try:
             data = bybit_get_spread()
             if data:
-                bybit_current_data = data
                 spread = data['spread']
                 bybit_spread_history.append(spread)
                 if len(bybit_spread_history) > 20:
@@ -348,13 +378,14 @@ def bot2_bybit_loop():
             time.sleep(10)
 
 # ==================================================
-# ОБРАБОТЧИК КОМАНД TELEGRAM (БЕЗ ПАРОЛЯ)
+# ОБРАБОТЧИК КОМАНД TELEGRAM (БЕЗ ПАРОЛЯ) С УЛУЧШЕННЫМИ СТАТУСАМИ
 # ==================================================
 def handle_commands():
     global bot1_mexc_running, bot1_bybit_running, bot2_mexc_running, bot2_bybit_running
     global mexc_spot, mexc_future, mexc_target, mexc_interval
     global bybit_spot, bybit_future, bybit_target, bybit_interval
     global mexc_min_spread, mexc_scan_interval, bybit_min_spread, bybit_scan_interval
+    global mexc_current_data, bybit_current_data
 
     update_id = None
     while True:
@@ -428,7 +459,56 @@ def handle_commands():
                     continue
                 if text == '/status1m':
                     status = "✅ работает" if bot1_mexc_running else "⏸ остановлен"
-                    send_telegram_to_chat(chat_id, f"📊 MEXC бот1: {status}\nПара: {mexc_spot}\nЦель: {mexc_target}%\nИнтервал: {mexc_interval} сек")
+                    try:
+                        # Берём актуальные данные из mexc_current_data (заполняется в mexc_get_spread)
+                        if mexc_current_data:
+                            spread = mexc_current_data['spread']
+                            action = mexc_current_data['action']
+                            spot_ask = mexc_current_data['spot_ask']
+                            spot_bid = mexc_current_data['spot_bid']
+                            future_ask = mexc_current_data['future_ask']
+                            future_bid = mexc_current_data['future_bid']
+                        else:
+                            # Если данных ещё нет, попробуем получить свежие
+                            data = mexc_get_spread()
+                            if data:
+                                spread = data['spread']
+                                action = data['action']
+                                spot_ask = data['spot_ask']
+                                spot_bid = data['spot_bid']
+                                future_ask = data['future_ask']
+                                future_bid = data['future_bid']
+                            else:
+                                spread = action = spot_ask = spot_bid = future_ask = future_bid = "нет данных"
+                        msg = f"""
+📊 <b>СТАТУС MEXC (бот #1)</b>
+━━━━━━━━━━━━━━━━━━━━━
+<b>Состояние:</b> {status}
+<b>Пара спот:</b> {mexc_spot}
+<b>Пара фьюч:</b> {mexc_future}
+<b>Цель (спред):</b> {mexc_target}%
+<b>Интервал:</b> {mexc_interval} сек
+
+📈 <b>Текущие цены:</b>
+Спот ASK: {spot_ask if spot_ask != 'нет данных' else '—'} USDT
+Спот BID: {spot_bid if spot_bid != 'нет данных' else '—'} USDT
+Фьюч ASK: {future_ask if future_ask != 'нет данных' else '—'} USDT
+Фьюч BID: {future_bid if future_bid != 'нет данных' else '—'} USDT
+
+🔄 <b>Арбитраж:</b>
+Текущий спред: {spread}%
+Направление: {action}
+"""
+                        if spread != 'нет данных' and spread <= mexc_target:
+                            msg += "🎯 <b>ЦЕЛЬ ДОСТИГНУТА!</b>"
+                        elif spread != 'нет данных':
+                            need = spread - mexc_target
+                            msg += f"📉 До цели: {need:.2f}%"
+                        else:
+                            msg += "⏳ Данные ещё не получены"
+                    except Exception as e:
+                        msg = f"❌ Ошибка получения данных: {e}"
+                    send_telegram_to_chat(chat_id, msg)
                     continue
 
                 # --- Команды для первого бота ByBit (суффикс 1b) ---
@@ -479,7 +559,54 @@ def handle_commands():
                     continue
                 if text == '/status1b':
                     status = "✅ работает" if bot1_bybit_running else "⏸ остановлен"
-                    send_telegram_to_chat(chat_id, f"📊 ByBit бот1: {status}\nПара: {bybit_spot}\nЦель: {bybit_target}%\nИнтервал: {bybit_interval} сек")
+                    try:
+                        if bybit_current_data:
+                            spread = bybit_current_data['spread']
+                            action = bybit_current_data['action']
+                            spot_ask = bybit_current_data['spot_ask']
+                            spot_bid = bybit_current_data['spot_bid']
+                            future_ask = bybit_current_data['future_ask']
+                            future_bid = bybit_current_data['future_bid']
+                        else:
+                            data = bybit_get_spread()
+                            if data:
+                                spread = data['spread']
+                                action = data['action']
+                                spot_ask = data['spot_ask']
+                                spot_bid = data['spot_bid']
+                                future_ask = data['future_ask']
+                                future_bid = data['future_bid']
+                            else:
+                                spread = action = spot_ask = spot_bid = future_ask = future_bid = "нет данных"
+                        msg = f"""
+📊 <b>СТАТУС ByBit (бот #1)</b>
+━━━━━━━━━━━━━━━━━━━━━
+<b>Состояние:</b> {status}
+<b>Пара спот:</b> {bybit_spot}
+<b>Пара фьюч:</b> {bybit_future}
+<b>Цель (спред):</b> {bybit_target}%
+<b>Интервал:</b> {bybit_interval} сек
+
+📈 <b>Текущие цены:</b>
+Спот ASK: {spot_ask if spot_ask != 'нет данных' else '—'} USDT
+Спот BID: {spot_bid if spot_bid != 'нет данных' else '—'} USDT
+Фьюч ASK: {future_ask if future_ask != 'нет данных' else '—'} USDT
+Фьюч BID: {future_bid if future_bid != 'нет данных' else '—'} USDT
+
+🔄 <b>Арбитраж:</b>
+Текущий спред: {spread}%
+Направление: {action}
+"""
+                        if spread != 'нет данных' and spread <= bybit_target:
+                            msg += "🎯 <b>ЦЕЛЬ ДОСТИГНУТА!</b>"
+                        elif spread != 'нет данных':
+                            need = spread - bybit_target
+                            msg += f"📉 До цели: {need:.2f}%"
+                        else:
+                            msg += "⏳ Данные ещё не получены"
+                    except Exception as e:
+                        msg = f"❌ Ошибка получения данных: {e}"
+                    send_telegram_to_chat(chat_id, msg)
                     continue
 
                 # --- Команды для второго бота MEXC (сканер) суффикс 2m ---
@@ -517,9 +644,11 @@ def handle_commands():
                     status = "✅ работает" if bot2_mexc_running else "⏸ остановлен"
                     msg = f"📊 Сканер MEXC: {status}\nМин. спред: {mexc_min_spread}%\nИнтервал: {mexc_scan_interval} сек\nСигналов: {len(mexc_last_signals)}"
                     if mexc_last_signals:
-                        msg += "\nПоследние сигналы:\n"
+                        msg += "\n🔔 Последние сигналы:\n"
                         for s in mexc_last_signals[-5:]:
                             msg += f"{s['pair']}: {s['spread']:.2f}% в {s['time']}\n"
+                    else:
+                        msg += "\n📭 Нет сигналов"
                     send_telegram_to_chat(chat_id, msg)
                     continue
                 if text == '/last2m':
@@ -567,9 +696,11 @@ def handle_commands():
                     status = "✅ работает" if bot2_bybit_running else "⏸ остановлен"
                     msg = f"📊 Сканер ByBit: {status}\nМин. спред: {bybit_min_spread}%\nИнтервал: {bybit_scan_interval} сек\nСигналов: {len(bybit_last_signals)}"
                     if bybit_last_signals:
-                        msg += "\nПоследние сигналы:\n"
+                        msg += "\n🔔 Последние сигналы:\n"
                         for s in bybit_last_signals[-5:]:
                             msg += f"{s['pair']}: {s['spread']:.2f}% в {s['time']}\n"
+                    else:
+                        msg += "\n📭 Нет сигналов"
                     send_telegram_to_chat(chat_id, msg)
                     continue
                 if text == '/last2b':
@@ -596,7 +727,7 @@ def handle_commands():
 /set1m BTC – сменить пару
 /target1m 5 – цель (%)
 /interval1m 120 – интервал (сек)
-/status1m
+/status1m – полный статус
 
 <b>Первый бот (одна пара) ByBit:</b>
 /start1b, /stop1b
