@@ -6,7 +6,7 @@ import threading
 import os
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-# ========== ДЛЯ RENDER / UPTIMEROBOT (HEALTH CHECK) ==========
+# ========== ДЛЯ RENDER (HEALTH CHECK) ==========
 PORT = int(os.environ.get('PORT', 10000))
 
 class HealthHandler(BaseHTTPRequestHandler):
@@ -14,7 +14,6 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.end_headers()
         self.wfile.write(b'Bot is running')
-    
     def do_HEAD(self):
         self.send_response(200)
         self.end_headers()
@@ -27,50 +26,56 @@ def run_health_server():
 threading.Thread(target=run_health_server, daemon=True).start()
 
 # ==================================================
-# НАСТРОЙКИ ТЕЛЕГРАМ (ОБЩИЕ)
+# НАСТРОЙКИ TELEGRAM
 # ==================================================
 TELEGRAM_TOKEN = "8751313465:AAEKdudEaxKwNcwpB2FSThSRkut7L4KRvSI"
-TELEGRAM_CHAT_ID = "1540385721"  # Ваш личный ID (для уведомлений)
+TELEGRAM_CHAT_ID = "1540385721"          # Ваш ID
 ENABLE_TELEGRAM = True
 
-# ========== ЗАЩИТА ПАРОЛЕМ ==========
-SECRET_PASSWORD = "MySecretPass123"   # Смените на свой пароль
-authorized_users = set()
-pending_password = {}
+# ==================================================
+# ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ДЛЯ УПРАВЛЕНИЯ БОТАМИ
+# ==================================================
+# Флаги работы каждого бота
+bot1_mexc_running = True      # первый бот MEXC (одна пара)
+bot1_bybit_running = True     # первый бот ByBit (одна пара)
+bot2_mexc_running = True      # второй бот MEXC (сканер всех пар)
+bot2_bybit_running = True     # второй бот ByBit (сканер всех пар)
 
-def is_authorized(chat_id):
-    return chat_id in authorized_users
+# Объекты бирж (будут созданы в потоках)
+exchange_mexc = None
+exchange_bybit = None
 
-def start_password_flow(chat_id):
-    pending_password[chat_id] = True
-    send_telegram_to_chat(chat_id, "🔐 Введите пароль для доступа к боту:")
+# Данные для первого бота MEXC (одна пара)
+mexc_spot = "BTC/USDT"
+mexc_future = "BTC/USDT:USDT"
+mexc_target = 5.0
+mexc_interval = 120
+mexc_last_alert = None
+mexc_spread_history = []
+mexc_current_data = None
 
-def check_password(chat_id, text):
-    if text == SECRET_PASSWORD:
-        authorized_users.add(chat_id)
-        pending_password.pop(chat_id, None)
-        send_telegram_to_chat(chat_id, "✅ Доступ разрешён! Теперь вы можете пользоваться ботом.\nОтправьте /start1 для первого бота или /help2 для второго.")
-        return True
-    else:
-        send_telegram_to_chat(chat_id, "❌ Неверный пароль. Доступ запрещён.\nПопробуйте снова командой /register")
-        pending_password.pop(chat_id, None)
-        return False
+# Данные для первого бота ByBit
+bybit_spot = "BTC/USDT"
+bybit_future = "BTC/USDT:USDT"
+bybit_target = 0.5
+bybit_interval = 120
+bybit_last_alert = None
+bybit_spread_history = []
+bybit_current_data = None
+
+# Данные для второго бота MEXC (сканер)
+mexc_min_spread = 2.0
+mexc_scan_interval = 10
+mexc_last_signals = []
+
+# Данные для второго бота ByBit (сканер)
+bybit_min_spread = 0.5
+bybit_scan_interval = 10
+bybit_last_signals = []
 
 # ==================================================
-# ПЕРВЫЙ БОТ (АРБИТРАЖ ПО ОДНОЙ ПАРЕ) – ByBit
+# ФУНКЦИИ TELEGRAM
 # ==================================================
-spot_symbol = "BTC/USDT"
-futures_symbol = "BTC/USDT:USDT"
-target_spread_percent = 0.5
-check_interval = 120
-alert_levels = [0.4, 0.3, 0.2, 0.1]
-
-last_alert = None
-current_spread_data = None
-bot1_running = True
-spread_history = []
-exchange = None
-
 def send_telegram(message):
     if not ENABLE_TELEGRAM:
         return
@@ -101,620 +106,546 @@ def get_updates(offset=None):
         print(f"❌ Ошибка получения обновлений: {e}")
         return []
 
-def is_valid_pair(coin_symbol):
-    global exchange
+# ==================================================
+# ЛОГИКА ПЕРВОГО БОТА (ОДНА ПАРА) ДЛЯ MEXC
+# ==================================================
+def mexc_get_spread():
+    global exchange_mexc, mexc_spot, mexc_future
     try:
-        exchange.load_markets(reload=True)
-        spot_pair = f"{coin_symbol}/USDT"
-        future_pair = f"{coin_symbol}/USDT:USDT"
-        if spot_pair in exchange.markets and future_pair in exchange.markets:
-            return True, spot_pair, future_pair
-        return False, None, None
+        spot = exchange_mexc.fetch_order_book(mexc_spot)
+        future = exchange_mexc.fetch_order_book(mexc_future)
+        spot_ask = spot['asks'][0][0]
+        spot_bid = spot['bids'][0][0]
+        future_bid = future['bids'][0][0]
+        future_ask = future['asks'][0][0]
+        spread_long = ((future_bid - spot_ask) / spot_ask) * 100
+        spread_short = ((spot_bid - future_ask) / future_ask) * 100
+        if spread_long > spread_short:
+            return {'spread': spread_long, 'action': 'Купить СПОТ → Продать ФЬЮЧЕРС'}
+        else:
+            return {'spread': spread_short, 'action': 'Купить ФЬЮЧЕРС → Продать СПОТ'}
     except Exception as e:
-        print(f"Ошибка проверки пары: {e}")
-        return False, None, None
+        print(f"MEXC ошибка спреда: {e}")
+        return None
 
-def handle_command_bot1(text, chat_id):
-    global spot_symbol, futures_symbol, target_spread_percent, check_interval, last_alert, spread_history, bot1_running
-
-    text = text.strip().lower()
-    print(f"📩 БОТ1 команда: {text}")
-
-    # Клавиатура
-    main_keyboard = {
-        "keyboard": [
-            ["/status1", "/check1"],
-            ["/set1 BTC", "/set1 ETH", "/set1 SOL"],
-            ["/target1", "/interval1", "/pairs1"],
-            ["/reset1", "/clean1", "/help1"]
-        ],
-        "resize_keyboard": True
-    }
-    hide_keyboard = {"remove_keyboard": True}
-
-    if text == '/start':
-        # Запуск цикла бота #1
-        bot1_running = True
-        send_telegram_to_chat(chat_id, "✅ Бот #1 запущен (мониторинг возобновлён)")
-        return True
-
-    elif text == '/stop':
-        # Остановка цикла бота #1
-        bot1_running = False
-        send_telegram_to_chat(chat_id, "⏸ Бот #1 остановлен. /start1 - возобновить")
-        return True
-
-    elif text == '/help':
-        message = """
-📚 <b>Помощь (бот #1 - арбитраж по одной паре ByBit)</b>
-
-/start1 – запустить мониторинг (если остановлен)
-/stop1 – остановить мониторинг
-/set1 BTC – сменить пару
-/status1 – текущий спред
-/check1 – проверить статус пары
-/target1 0.5 – установить цель (%)
-/interval1 30 – интервал проверки (сек)
-/pairs1 – список популярных пар
-/reset1 – сбросить историю
-/clean1 – очистить бота
-/hide1 – скрыть клавиатуру
-"""
-        send_telegram_to_chat(chat_id, message, reply_markup=main_keyboard)
-        return True
-
-    elif text == '/hide':
-        send_telegram_to_chat(chat_id, "⌨️ Клавиатура скрыта. /help1 – показать.", reply_markup=hide_keyboard)
-        return True
-
-    elif text == '/pairs':
-        message = """
-📋 <b>ПОПУЛЯРНЫЕ ПАРЫ НА ByBit</b>
-
-Основные: BTC, ETH, SOL, XRP, DOGE, ADA
-Альткоины: MATIC, DOT, AVAX, LINK, LTC, UNI
-Мемкоины: PEPE, SHIB, DOGE, WIF, FLOKI
-Новые: WLD, SUI, TON, APT, ARB, OP, VANRY
-
-💡 Используйте: /set1 НАЗВАНИЕ (например /set1 VANRY)
-"""
-        send_telegram_to_chat(chat_id, message)
-        return True
-
-    elif text == '/status':
-        if current_spread_data:
-            spread = current_spread_data.get('spread', 0)
-            need = spread - target_spread_percent
-            if spread <= target_spread_percent:
-                status = "✅ ЦЕЛЬ ДОСТИГНУТА!"
-            else:
-                status = f"📉 Нужно снижение: {need:.2f}%"
-            trend_text = ""
-            if len(spread_history) >= 2:
-                trend = spread_history[-1] - spread_history[-2]
-                if trend < -0.05:
-                    trend_text = "📉 Спред снижается"
-                elif trend > 0.05:
-                    trend_text = "📈 Спред растет"
-                else:
-                    trend_text = "➡️ Спред стабилен"
-            state = "✅ РАБОТАЕТ" if bot1_running else "⏸ ОСТАНОВЛЕН"
-            message = f"""
-📊 <b>СТАТУС БОТА #1</b>
-
-<b>Пара:</b> {spot_symbol}
-<b>Текущий спред:</b> {spread:+.2f}%
-<b>Цель:</b> {target_spread_percent}%
-<b>Статус:</b> {status}
-<b>Тренд:</b> {trend_text}
-<b>Интервал:</b> {check_interval} сек
-<b>Действие:</b> {current_spread_data.get('action', '-')}
-<b>Состояние:</b> {state}
-"""
-        else:
-            message = "⏳ Данные еще не получены, подождите..."
-        send_telegram_to_chat(chat_id, message)
-        return True
-
-    elif text == '/check':
-        send_telegram_to_chat(chat_id, "🔍 Проверка статуса пары...")
-        try:
-            exchange.load_markets(reload=True)
-            spot_ok = spot_symbol in exchange.markets and exchange.markets[spot_symbol].get('active')
-            fut_ok = futures_symbol in exchange.markets and exchange.markets[futures_symbol].get('active')
-            coin = spot_symbol.replace('/USDT', '')
-            if spot_ok and fut_ok:
-                spot_book = exchange.fetch_order_book(spot_symbol)
-                fut_book = exchange.fetch_order_book(futures_symbol)
-                spread = ((fut_book['bids'][0][0] - spot_book['asks'][0][0]) / spot_book['asks'][0][0]) * 100
-                message = f"✅ Пара {coin} активна\nСпред: {spread:+.2f}%\nЦель: {target_spread_percent}%"
-                if spread <= target_spread_percent:
-                    profit = spread - 0.15
-                    message += f"\n💰 ЦЕЛЬ! Прибыль: {profit:.2f}%"
-            else:
-                message = f"⚠️ Пара {coin} неактивна\nСпот: {'✅' if spot_ok else '❌'}\nФьючерс: {'✅' if fut_ok else '❌'}"
-        except Exception as e:
-            message = f"❌ Ошибка: {e}"
-        send_telegram_to_chat(chat_id, message)
-        return True
-
-    elif text == '/reset':
-        spread_history = []
-        send_telegram_to_chat(chat_id, "✅ История спреда сброшена!")
-        return True
-
-    elif text == '/clean':
-        spread_history = []
-        last_alert = None
-        send_telegram_to_chat(chat_id, "🧹 Бот #1 очищен!")
-        return True
-
-    elif text.startswith('/set '):
-        coin = text.replace('/set ', '').upper().strip()
-        send_telegram_to_chat(chat_id, f"🔍 Проверяю {coin}...")
-        is_valid, spot_pair, future_pair = is_valid_pair(coin)
-        if is_valid:
-            old_pair = spot_symbol
-            spot_symbol = spot_pair
-            futures_symbol = future_pair
-            last_alert = None
-            spread_history = []
-            message = f"""
-✅ <b>ПАРА ИЗМЕНЕНА (бот #1)</b>
-
-<b>Было:</b> {old_pair}
-<b>Стало:</b> {spot_symbol}
-🎯 <b>Цель:</b> {target_spread_percent}%
-⏰ <b>Интервал:</b> {check_interval} сек
-
-<i>Отслеживание начато...</i>
-"""
-            send_telegram_to_chat(chat_id, message)
-        else:
-            message = f"❌ ПАРА {coin} НЕ НАЙДЕНА\n💡 /pairs1 - список популярных пар"
-            send_telegram_to_chat(chat_id, message)
-        return True
-
-    elif text.startswith('/target '):
-        try:
-            new_target = float(text.replace('/target ', ''))
-            if 0.3 <= new_target <= 9.0:
-                target_spread_percent = new_target
-                message = f"✅ Цель изменена: {target_spread_percent}%"
-                send_telegram_to_chat(chat_id, message)
-            else:
-                message = "❌ Значение должно быть от 0.3 до 9.0"
-                send_telegram_to_chat(chat_id, message)
-        except:
-            message = "❌ Неверный формат. Пример: /target1 0.8"
-            send_telegram_to_chat(chat_id, message)
-        return True
-
-    elif text.startswith('/interval '):
-        try:
-            new_interval = int(text.replace('/interval ', ''))
-            if 5 <= new_interval <= 600:
-                check_interval = new_interval
-                message = f"✅ Интервал изменен: {check_interval} сек"
-                send_telegram_to_chat(chat_id, message)
-            else:
-                message = "❌ Значение должно быть от 5 до 600"
-                send_telegram_to_chat(chat_id, message)
-        except:
-            message = "❌ Неверный формат. Пример: /interval1 30"
-            send_telegram_to_chat(chat_id, message)
-        return True
-
-    else:
-        if text.startswith('/'):
-            send_telegram_to_chat(chat_id, f"❌ Неизвестная команда для бота #1: {text}\n/help1", reply_markup=main_keyboard)
-        return False
-
-def bot1_loop():
-    global exchange, current_spread_data, last_alert, spread_history, bot1_running
-    global spot_symbol, futures_symbol, target_spread_percent, check_interval, alert_levels
-
-    print("🚀 ЗАПУСК АРБИТРАЖНОГО БОТА ByBit (БОТ №1)")
-    print("="*50)
-    print("📡 Подключение к ByBit...")
-    
-    exchange = ccxt.bybit({
-        'enableRateLimit': True,
-        'options': {
-            'defaultType': 'swap',
-            'defaultSubType': 'linear',
-            'defaultSettle': 'USDT'
-        }
-    })
-    print("🔗 API ByBit public URL:", exchange.urls['api']['public'])
-    
-    print("📡 Загрузка рынков...")
-    exchange.load_markets()
-    print("✅ Биржа ByBit подключена!")
-
-    send_telegram(f"✅ АРБИТРАЖНЫЙ БОТ #1 (ByBit) ЗАПУЩЕН!\n\n📊 Слежу за {spot_symbol}\n🎯 Цель: {target_spread_percent}%\n\n💡 /set1 ЛЮБАЯ_МОНЕТА - сменить пару\n📋 /help1 - все команды")
-
-    print(f"\n📊 Текущая пара: {spot_symbol}")
-    print(f"🎯 Цель: {target_spread_percent}%")
-    print(f"⏰ Интервал: {check_interval} сек")
-    print("="*50)
-    print(f"\n📊 Начинаю отслеживание...")
-    print("="*50)
-
-    def get_spread():
-        try:
-            spot = exchange.fetch_order_book(spot_symbol)
-            future = exchange.fetch_order_book(futures_symbol)
-            spot_ask = spot['asks'][0][0]
-            spot_bid = spot['bids'][0][0]
-            future_bid = future['bids'][0][0]
-            future_ask = future['asks'][0][0]
-            spread_long = ((future_bid - spot_ask) / spot_ask) * 100
-            spread_short = ((spot_bid - future_ask) / future_ask) * 100
-            if spread_long > spread_short:
-                return {
-                    'spread': spread_long,
-                    'action': 'Купить СПОТ → Продать ФЬЮЧЕРС',
-                    'buy_price': spot_ask,
-                    'sell_price': future_bid
-                }
-            else:
-                return {
-                    'spread': spread_short,
-                    'action': 'Купить ФЬЮЧЕРС → Продать СПОТ',
-                    'buy_price': future_ask,
-                    'sell_price': spot_bid
-                }
-        except Exception as e:
-            print(f"❌ Ошибка получения спреда: {e}")
-            return None
-
+def bot1_mexc_loop():
+    global bot1_mexc_running, mexc_target, mexc_interval, mexc_last_alert, mexc_spread_history, mexc_current_data, exchange_mexc
+    print("🚀 Запуск первого бота MEXC (одна пара)")
+    send_telegram("✅ Первый бот MEXC запущен")
+    exchange_mexc = ccxt.mexc({'enableRateLimit': True})
+    exchange_mexc.load_markets()
     while True:
-        if not bot1_running:
+        if not bot1_mexc_running:
             time.sleep(2)
             continue
         try:
-            data = get_spread()
+            data = mexc_get_spread()
             if data:
-                current_spread_data = data
+                mexc_current_data = data
                 spread = data['spread']
-                now = datetime.now().strftime('%H:%M:%S')
-                spread_history.append(spread)
-                if len(spread_history) > 20:
-                    spread_history.pop(0)
-                print(f"🕐 {now} | {spot_symbol} | Спред: {spread:+.2f}%", end="")
-                if spread <= target_spread_percent:
-                    print(" 🎯 ЦЕЛЬ ДОСТИГНУТА!")
-                    if last_alert != "target":
+                mexc_spread_history.append(spread)
+                if len(mexc_spread_history) > 20:
+                    mexc_spread_history.pop(0)
+                print(f"MEXC | {mexc_spot} | Спред: {spread:.2f}%")
+                if spread <= mexc_target:
+                    if mexc_last_alert != "target":
                         profit = spread - 0.15
-                        msg = f"""
-🎯 <b>ЦЕЛЬ ДОСТИГНУТА (бот #1)!</b> 🎯
-━━━━━━━━━━━━━━━━━━━━━
-📊 {spot_symbol}
-📈 <b>Спред:</b> {spread:+.2f}%
-💰 <b>Чистая прибыль:</b> {profit:.2f}%
-⚡ {data['action']}
-━━━━━━━━━━━━━━━━━━━━━
-⚡ ДЕЙСТВУЙТЕ БЫСТРО!
-"""
+                        msg = f"🎯 MEXC ЦЕЛЬ!\n{mexc_spot}\nСпред: {spread:.2f}%\nПрибыль: {profit:.2f}%"
                         send_telegram(msg)
-                        last_alert = "target"
+                        mexc_last_alert = "target"
                 else:
-                    need = spread - target_spread_percent
-                    print(f" | Нужно снижение: {need:.2f}%")
-                    for level in alert_levels:
-                        if spread <= level and last_alert != level:
-                            msg = f"🔔 {spot_symbol}\nСпред снизился до {level}%\nТекущий: {spread:+.2f}%\nОсталось до цели: {need:.2f}%"
-                            send_telegram(msg)
-                            last_alert = level
-                            break
-                    if spread > max(alert_levels) + 0.3:
-                        last_alert = None
-            time.sleep(check_interval)
+                    if spread <= mexc_target + 1.0 and mexc_last_alert != "close":
+                        send_telegram(f"🔔 MEXC близко: {spread:.2f}%")
+                        mexc_last_alert = "close"
+                    elif spread > mexc_target + 2.0:
+                        mexc_last_alert = None
+            time.sleep(mexc_interval)
         except Exception as e:
-            print(f"❌ Ошибка: {e}")
-            time.sleep(check_interval)
+            print(f"MEXC бот1 ошибка: {e}")
+            time.sleep(mexc_interval)
 
 # ==================================================
-# ВТОРОЙ БОТ (СКАНЕР ВСЕХ ПАР) – ByBit, С СУФФИКСОМ 2
+# ЛОГИКА ПЕРВОГО БОТА ДЛЯ BYBIT
 # ==================================================
-class ScannerBot:
-    def __init__(self, token, default_chat_id):
-        self.token = token
-        self.default_chat_id = default_chat_id
-        self.exchange = ccxt.bybit({
-            'enableRateLimit': True,
-            'options': {
-                'defaultType': 'swap',
-                'defaultSubType': 'linear'
-            }
-        })
-        print("📡 Бот #2: загрузка рынков ByBit...")
-        print("🔗 API ByBit public URL:", self.exchange.urls['api']['public'])
-        self.exchange.load_markets()
-        
-        self.min_spread_percent = 0.5
-        self.sleep_between_cycles = 10
-        self.is_scanning = True
-        self.last_signals = []
-        
-        print("📋 Бот #2: формирую список пар...")
-        spot_pairs = []
-        for symbol in self.exchange.markets:
-            market = self.exchange.markets[symbol]
-            if symbol.endswith('/USDT') and market.get('spot') and market.get('active'):
-                spot_pairs.append(symbol)
-        print(f"📈 Спотовых пар: {len(spot_pairs)}")
-        
-        self.trading_pairs = []
-        for spot in spot_pairs:
-            base = spot.replace('/USDT', '')
-            future = f"{base}/USDT:USDT"
-            if future in self.exchange.markets:
-                self.trading_pairs.append({'spot': spot, 'future': future, 'base': base})
-        print(f"🔄 Пар для сканирования: {len(self.trading_pairs)}")
-        
-    def get_spread(self, spot_symbol, futures_symbol):
-        try:
-            orderbook_spot = self.exchange.fetch_order_book(spot_symbol)
-            orderbook_futures = self.exchange.fetch_order_book(futures_symbol)
-            spot_bid = orderbook_spot['bids'][0][0]
-            spot_ask = orderbook_spot['asks'][0][0]
-            futures_bid = orderbook_futures['bids'][0][0]
-            futures_ask = orderbook_futures['asks'][0][0]
-            
-            if spot_ask < futures_bid:
-                spread_pct = ((futures_bid - spot_ask) / spot_ask) * 100
-                if spread_pct > self.min_spread_percent:
-                    net_profit = spread_pct - 0.15
-                    print(f"\n{'='*60}")
-                    print(f"🚨 АРБИТРАЖ (бот #2)! {spot_symbol}")
-                    print(f"📈 Спред: {spread_pct:+.2f}% | 💵 ПРИБЫЛЬ: {net_profit:.2f}%")
-                    print(f"💰 ПОКУПАЙ спот: {spot_ask:.8f}")
-                    print(f"💰 ПРОДАВАЙ фьюч: {futures_bid:.8f}")
-                    print(f"{'='*60}")
-                    
-                    msg = f"""
-🚨 АРБИТРАЖ НАЙДЕН (бот #2)!
-━━━━━━━━━━━━━━━━━━━
-{spot_symbol}
-Спред: {spread_pct:+.2f}%
-Чистая прибыль: {net_profit:.2f}%
-Покупай спот: {spot_ask:.8f}
-Продавай фьюч: {futures_bid:.8f}
-"""
-                    send_telegram(msg)
-                    self.last_signals.append({
-                        'pair': spot_symbol,
-                        'spread': spread_pct,
-                        'profit': net_profit,
-                        'time': datetime.now().strftime('%H:%M:%S')
-                    })
-                    if len(self.last_signals) > 10:
-                        self.last_signals.pop(0)
-                return spread_pct
-                
-            elif futures_ask < spot_bid:
-                spread_pct = ((spot_bid - futures_ask) / futures_ask) * 100
-                if spread_pct > self.min_spread_percent:
-                    net_profit = spread_pct - 0.15
-                    print(f"\n{'='*60}")
-                    print(f"🚨 АРБИТРАЖ (бот #2)! {spot_symbol}")
-                    print(f"📈 Спред: {spread_pct:+.2f}% | 💵 ПРИБЫЛЬ: {net_profit:.2f}%")
-                    print(f"💰 ПОКУПАЙ фьюч: {futures_ask:.8f}")
-                    print(f"💰 ПРОДАВАЙ спот: {spot_bid:.8f}")
-                    print(f"{'='*60}")
-                    
-                    msg = f"""
-🚨 АРБИТРАЖ НАЙДЕН (бот #2)!
-━━━━━━━━━━━━━━━━━━━
-{spot_symbol}
-Спред: {spread_pct:+.2f}%
-Чистая прибыль: {net_profit:.2f}%
-Покупай фьюч: {futures_ask:.8f}
-Продавай спот: {spot_bid:.8f}
-"""
-                    send_telegram(msg)
-                    self.last_signals.append({
-                        'pair': spot_symbol,
-                        'spread': spread_pct,
-                        'profit': net_profit,
-                        'time': datetime.now().strftime('%H:%M:%S')
-                    })
-                    if len(self.last_signals) > 10:
-                        self.last_signals.pop(0)
-                return spread_pct
-            else:
-                return 0
-        except Exception as e:
-            return None
-    
-    def handle_command(self, text, chat_id):
-        text = text.strip().lower()
-        print(f"📩 БОТ2 команда: {text}")
-        
-        if text == '/help':
-            message = f"""
-📚 <b>ПОМОЩЬ (бот #2 - сканер ByBit)</b>
-
-/start2 - Запустить сканирование
-/stop2 - Остановить сканирование
-/status2 - Текущий статус
-/last2 - Последние 5 сигналов
-/threshold2 0.5 - Изменить мин. спред
-/interval2 60 - Изменить интервал между циклами
-
-Текущие настройки:
-Спред > {self.min_spread_percent}%
-Интервал: {self.sleep_between_cycles} сек
-"""
-            send_telegram_to_chat(chat_id, message)
-            return True
-        
-        elif text == '/start':
-            self.is_scanning = True
-            send_telegram_to_chat(chat_id, "✅ СКАНИРОВАНИЕ (бот #2) ВОЗОБНОВЛЕНО!")
-            return True
-        
-        elif text == '/stop':
-            self.is_scanning = False
-            send_telegram_to_chat(chat_id, "⏸ СКАНИРОВАНИЕ (бот #2) ОСТАНОВЛЕНО! /start2 - возобновить")
-            return True
-        
-        elif text == '/status':
-            status_text = "РАБОТАЕТ ✅" if self.is_scanning else "ОСТАНОВЛЕН ⏸"
-            message = f"""
-📊 СТАТУС СКАНЕРА (бот #2)
-
-Состояние: {status_text}
-Мин. спред: {self.min_spread_percent}%
-Интервал: {self.sleep_between_cycles} сек
-Найдено сигналов: {len(self.last_signals)}
-"""
-            send_telegram_to_chat(chat_id, message)
-            return True
-        
-        elif text == '/last':
-            if self.last_signals:
-                message = "🔄 ПОСЛЕДНИЕ СИГНАЛЫ (бот #2):\n"
-                for sig in self.last_signals[-5:]:
-                    message += f"\n{sig['pair']}: {sig['spread']:.2f}% | {sig['profit']:.2f}% | {sig['time']}"
-                send_telegram_to_chat(chat_id, message)
-            else:
-                send_telegram_to_chat(chat_id, "📭 Пока нет сигналов")
-            return True
-        
-        elif text.startswith('/threshold '):
-            try:
-                val = float(text.replace('/threshold ', ''))
-                if 0.2 <= val <= 9.0:
-                    self.min_spread_percent = val
-                    send_telegram_to_chat(chat_id, f"✅ Мин. спред: {val}% | Чистая прибыль: {val - 0.15:.2f}%")
-                else:
-                    send_telegram_to_chat(chat_id, "❌ Значение от 0.2 до 9.0")
-            except:
-                send_telegram_to_chat(chat_id, "❌ Пример: /threshold2 0.5")
-            return True
-        
-        elif text.startswith('/interval '):
-            try:
-                val = int(text.replace('/interval ', ''))
-                if 5 <= val <= 300:
-                    self.sleep_between_cycles = val
-                    send_telegram_to_chat(chat_id, f"✅ Интервал: {val} сек")
-                else:
-                    send_telegram_to_chat(chat_id, "❌ Значение от 5 до 300")
-            except:
-                send_telegram_to_chat(chat_id, "❌ Пример: /interval2 30")
-            return True
-        
+def bybit_get_spread():
+    global exchange_bybit, bybit_spot, bybit_future
+    try:
+        spot = exchange_bybit.fetch_order_book(bybit_spot)
+        future = exchange_bybit.fetch_order_book(bybit_future)
+        spot_ask = spot['asks'][0][0]
+        spot_bid = spot['bids'][0][0]
+        future_bid = future['bids'][0][0]
+        future_ask = future['asks'][0][0]
+        spread_long = ((future_bid - spot_ask) / spot_ask) * 100
+        spread_short = ((spot_bid - future_ask) / future_ask) * 100
+        if spread_long > spread_short:
+            return {'spread': spread_long, 'action': 'Купить СПОТ → Продать ФЬЮЧЕРС'}
         else:
-            if text.startswith('/'):
-                send_telegram_to_chat(chat_id, f"❌ Неизвестная команда для бота #2: {text}\n/help2")
-            return False
-    
-    def run(self):
-        send_telegram(f"✅ АРБИТРАЖНЫЙ СКАНЕР ByBit (бот #2) ЗАПУЩЕН!\nСпред > {self.min_spread_percent}%")
-        print(f"\n🚀 Бот #2 запущен | Мин. спред: {self.min_spread_percent}% | Интервал: {self.sleep_between_cycles} сек | Пар: {len(self.trading_pairs)}")
-        
-        cycle = 0
-        while True:
-            if not self.is_scanning:
-                time.sleep(2)
-                continue
-            try:
-                cycle += 1
-                print(f"\n🔄 Бот #2 цикл #{cycle} | {datetime.now().strftime('%H:%M:%S')}")
-                print(f"🔎 Сканирую {len(self.trading_pairs)} пар...")
-                
-                profitable_count = 0
-                for i, pair in enumerate(self.trading_pairs):
-                    if not self.is_scanning:
-                        break
-                    result = self.get_spread(pair['spot'], pair['future'])
-                    if result and result > self.min_spread_percent:
-                        profitable_count += 1
-                    if (i + 1) % 100 == 0:
-                        print(f"📊 Прогресс: {i+1}/{len(self.trading_pairs)} | Найдено: {profitable_count}", end="\r")
-                    time.sleep(0.03)
-                
-                print(f"\n✅ Цикл #{cycle} завершён. Найдено: {profitable_count}")
-                print(f"⏰ Следующий цикл через {self.sleep_between_cycles} сек...")
-                time.sleep(self.sleep_between_cycles)
-                
-            except Exception as e:
-                print(f"❌ Бот #2 ошибка: {e}")
-                time.sleep(10)
+            return {'spread': spread_short, 'action': 'Купить ФЬЮЧЕРС → Продать СПОТ'}
+    except Exception as e:
+        print(f"ByBit ошибка спреда: {e}")
+        return None
+
+def bot1_bybit_loop():
+    global bot1_bybit_running, bybit_target, bybit_interval, bybit_last_alert, bybit_spread_history, bybit_current_data, exchange_bybit
+    print("🚀 Запуск первого бота ByBit (одна пара)")
+    send_telegram("✅ Первый бот ByBit запущен")
+    exchange_bybit = ccxt.bybit({
+        'enableRateLimit': True,
+        'options': {'defaultType': 'swap', 'defaultSubType': 'linear', 'defaultSettle': 'USDT'}
+    })
+    exchange_bybit.load_markets()
+    while True:
+        if not bot1_bybit_running:
+            time.sleep(2)
+            continue
+        try:
+            data = bybit_get_spread()
+            if data:
+                bybit_current_data = data
+                spread = data['spread']
+                bybit_spread_history.append(spread)
+                if len(bybit_spread_history) > 20:
+                    bybit_spread_history.pop(0)
+                print(f"ByBit | {bybit_spot} | Спред: {spread:.2f}%")
+                if spread <= bybit_target:
+                    if bybit_last_alert != "target":
+                        profit = spread - 0.1
+                        msg = f"🎯 ByBit ЦЕЛЬ!\n{bybit_spot}\nСпред: {spread:.2f}%\nПрибыль: {profit:.2f}%"
+                        send_telegram(msg)
+                        bybit_last_alert = "target"
+                else:
+                    if spread <= bybit_target + 0.5 and bybit_last_alert != "close":
+                        send_telegram(f"🔔 ByBit близко: {spread:.2f}%")
+                        bybit_last_alert = "close"
+                    elif spread > bybit_target + 1.0:
+                        bybit_last_alert = None
+            time.sleep(bybit_interval)
+        except Exception as e:
+            print(f"ByBit бот1 ошибка: {e}")
+            time.sleep(bybit_interval)
 
 # ==================================================
-# ГЛАВНЫЙ ОБРАБОТЧИК ТЕЛЕГРАМ
+# ВТОРОЙ БОТ (СКАНЕР ВСЕХ ПАР) ДЛЯ MEXC
 # ==================================================
-def telegram_polling(bot2):
-    global bot1_running
+def load_mexc_pairs():
+    global exchange_mexc
+    exchange_mexc.load_markets()
+    spot_pairs = [s for s in exchange_mexc.markets if s.endswith('/USDT') and exchange_mexc.markets[s].get('spot') and exchange_mexc.markets[s].get('active')]
+    trading_pairs = []
+    for spot in spot_pairs:
+        base = spot.replace('/USDT', '')
+        future = f"{base}/USDT:USDT"
+        if future in exchange_mexc.markets:
+            trading_pairs.append({'spot': spot, 'future': future})
+    return trading_pairs
+
+def bot2_mexc_loop():
+    global bot2_mexc_running, mexc_min_spread, mexc_scan_interval, mexc_last_signals, exchange_mexc
+    print("🚀 Запуск сканера MEXC (бот #2)")
+    send_telegram("✅ Сканер MEXC запущен")
+    exchange_mexc = exchange_mexc or ccxt.mexc({'enableRateLimit': True})
+    trading_pairs = load_mexc_pairs()
+    cycle = 0
+    while True:
+        if not bot2_mexc_running:
+            time.sleep(2)
+            continue
+        try:
+            cycle += 1
+            print(f"MEXC сканер цикл {cycle}, пар: {len(trading_pairs)}")
+            for pair in trading_pairs:
+                try:
+                    spot = exchange_mexc.fetch_order_book(pair['spot'])
+                    future = exchange_mexc.fetch_order_book(pair['future'])
+                    spot_ask = spot['asks'][0][0]
+                    spot_bid = spot['bids'][0][0]
+                    future_bid = future['bids'][0][0]
+                    future_ask = future['asks'][0][0]
+                    if spot_ask < future_bid:
+                        spread = ((future_bid - spot_ask) / spot_ask) * 100
+                        if spread > mexc_min_spread:
+                            net = spread - 0.15
+                            msg = f"🚨 MEXC АРБИТРАЖ! {pair['spot']}\nСпред: {spread:.2f}%\nПрибыль: {net:.2f}%"
+                            send_telegram(msg)
+                            mexc_last_signals.append({'pair': pair['spot'], 'spread': spread, 'time': datetime.now().strftime('%H:%M:%S')})
+                            if len(mexc_last_signals) > 10: mexc_last_signals.pop(0)
+                    elif future_ask < spot_bid:
+                        spread = ((spot_bid - future_ask) / future_ask) * 100
+                        if spread > mexc_min_spread:
+                            net = spread - 0.15
+                            msg = f"🚨 MEXC АРБИТРАЖ! {pair['spot']}\nСпред: {spread:.2f}%\nПрибыль: {net:.2f}%"
+                            send_telegram(msg)
+                            mexc_last_signals.append({'pair': pair['spot'], 'spread': spread, 'time': datetime.now().strftime('%H:%M:%S')})
+                            if len(mexc_last_signals) > 10: mexc_last_signals.pop(0)
+                except:
+                    pass
+                time.sleep(0.03)
+            time.sleep(mexc_scan_interval)
+        except Exception as e:
+            print(f"MEXC сканер ошибка: {e}")
+            time.sleep(10)
+
+# ==================================================
+# ВТОРОЙ БОТ (СКАНЕР) ДЛЯ BYBIT
+# ==================================================
+def load_bybit_pairs():
+    global exchange_bybit
+    exchange_bybit.load_markets()
+    spot_pairs = [s for s in exchange_bybit.markets if s.endswith('/USDT') and exchange_bybit.markets[s].get('spot') and exchange_bybit.markets[s].get('active')]
+    trading_pairs = []
+    for spot in spot_pairs:
+        base = spot.replace('/USDT', '')
+        future = f"{base}/USDT:USDT"
+        if future in exchange_bybit.markets:
+            trading_pairs.append({'spot': spot, 'future': future})
+    return trading_pairs
+
+def bot2_bybit_loop():
+    global bot2_bybit_running, bybit_min_spread, bybit_scan_interval, bybit_last_signals, exchange_bybit
+    print("🚀 Запуск сканера ByBit (бот #2)")
+    send_telegram("✅ Сканер ByBit запущен")
+    exchange_bybit = exchange_bybit or ccxt.bybit({'enableRateLimit': True, 'options': {'defaultType': 'swap'}})
+    trading_pairs = load_bybit_pairs()
+    cycle = 0
+    while True:
+        if not bot2_bybit_running:
+            time.sleep(2)
+            continue
+        try:
+            cycle += 1
+            print(f"ByBit сканер цикл {cycle}, пар: {len(trading_pairs)}")
+            for pair in trading_pairs:
+                try:
+                    spot = exchange_bybit.fetch_order_book(pair['spot'])
+                    future = exchange_bybit.fetch_order_book(pair['future'])
+                    spot_ask = spot['asks'][0][0]
+                    spot_bid = spot['bids'][0][0]
+                    future_bid = future['bids'][0][0]
+                    future_ask = future['asks'][0][0]
+                    if spot_ask < future_bid:
+                        spread = ((future_bid - spot_ask) / spot_ask) * 100
+                        if spread > bybit_min_spread:
+                            net = spread - 0.1
+                            msg = f"🚨 ByBit АРБИТРАЖ! {pair['spot']}\nСпред: {spread:.2f}%\nПрибыль: {net:.2f}%"
+                            send_telegram(msg)
+                            bybit_last_signals.append({'pair': pair['spot'], 'spread': spread, 'time': datetime.now().strftime('%H:%M:%S')})
+                            if len(bybit_last_signals) > 10: bybit_last_signals.pop(0)
+                    elif future_ask < spot_bid:
+                        spread = ((spot_bid - future_ask) / future_ask) * 100
+                        if spread > bybit_min_spread:
+                            net = spread - 0.1
+                            msg = f"🚨 ByBit АРБИТРАЖ! {pair['spot']}\nСпред: {spread:.2f}%\nПрибыль: {net:.2f}%"
+                            send_telegram(msg)
+                            bybit_last_signals.append({'pair': pair['spot'], 'spread': spread, 'time': datetime.now().strftime('%H:%M:%S')})
+                            if len(bybit_last_signals) > 10: bybit_last_signals.pop(0)
+                except:
+                    pass
+                time.sleep(0.03)
+            time.sleep(bybit_scan_interval)
+        except Exception as e:
+            print(f"ByBit сканер ошибка: {e}")
+            time.sleep(10)
+
+# ==================================================
+# ОБРАБОТЧИК КОМАНД TELEGRAM
+# ==================================================
+def handle_commands():
+    global bot1_mexc_running, bot1_bybit_running, bot2_mexc_running, bot2_bybit_running
+    global mexc_spot, mexc_future, mexc_target, mexc_interval
+    global bybit_spot, bybit_future, bybit_target, bybit_interval
+    global mexc_min_spread, mexc_scan_interval, bybit_min_spread, bybit_scan_interval
+
     update_id = None
     while True:
         try:
             updates = get_updates(update_id)
-            for update in updates:
-                update_id = update.get('update_id', 0) + 1
-                if 'message' in update:
-                    message = update['message']
-                    chat_id = message['chat']['id']
-                    text = message.get('text', '')
-                    
-                    if chat_id in pending_password:
-                        check_password(chat_id, text)
-                        continue
-                    
-                    if not is_authorized(chat_id):
-                        if text.startswith('/register'):
-                            start_password_flow(chat_id)
+            for upd in updates:
+                update_id = upd.get('update_id', 0) + 1
+                msg = upd.get('message')
+                if not msg:
+                    continue
+                chat_id = msg['chat']['id']
+                if chat_id != TELEGRAM_CHAT_ID:
+                    send_telegram_to_chat(chat_id, "🚫 Доступ запрещён.")
+                    continue
+                text = msg.get('text', '').strip().lower()
+                if not text.startswith('/'):
+                    continue
+
+                # --- Глобальные команды ---
+                if text == '/start':
+                    bot1_mexc_running = bot1_bybit_running = bot2_mexc_running = bot2_bybit_running = True
+                    send_telegram_to_chat(chat_id, "✅ Все боты запущены")
+                    continue
+                if text == '/stop':
+                    bot1_mexc_running = bot1_bybit_running = bot2_mexc_running = bot2_bybit_running = False
+                    send_telegram_to_chat(chat_id, "⏸ Все боты остановлены")
+                    continue
+
+                # --- Команды для первого бота MEXC (суффикс 1m) ---
+                if text == '/start1m':
+                    bot1_mexc_running = True
+                    send_telegram_to_chat(chat_id, "✅ Первый бот MEXC запущен")
+                    continue
+                if text == '/stop1m':
+                    bot1_mexc_running = False
+                    send_telegram_to_chat(chat_id, "⏸ Первый бот MEXC остановлен")
+                    continue
+                if text.startswith('/set1m '):
+                    coin = text.replace('/set1m ', '').upper()
+                    spot = f"{coin}/USDT"
+                    future = f"{coin}/USDT:USDT"
+                    try:
+                        exchange_mexc.load_markets(reload=True)
+                        if spot in exchange_mexc.markets and future in exchange_mexc.markets:
+                            mexc_spot = spot
+                            mexc_future = future
+                            send_telegram_to_chat(chat_id, f"✅ MEXC пара изменена на {mexc_spot}")
                         else:
-                            send_telegram_to_chat(chat_id, "🔐 Доступ запрещён. Для использования бота отправьте команду /register и введите пароль.")
-                        continue
-                    
-                    if text.startswith('/'):
-                        # Глобальные команды (управляют обоими ботами)
-                        if text == '/start':
-                            bot1_running = True
-                            bot2.is_scanning = True
-                            send_telegram_to_chat(chat_id, "✅ ОБА БОТА ЗАПУЩЕНЫ")
-                            continue
-                        elif text == '/stop':
-                            bot1_running = False
-                            bot2.is_scanning = False
-                            send_telegram_to_chat(chat_id, "⏸ ОБА БОТА ОСТАНОВЛЕНЫ")
-                            continue
-                        
-                        # Разделяем команду на имя и аргументы
-                        parts = text.split()
-                        cmd_name = parts[0]
-                        args = ' '.join(parts[1:]) if len(parts) > 1 else ''
-                        
-                        if cmd_name.endswith('2'):
-                            base_cmd = cmd_name[:-1]
-                            full_cmd = f"{base_cmd} {args}".strip()
-                            bot2.handle_command(full_cmd, chat_id)
-                        elif cmd_name.endswith('1'):
-                            base_cmd = cmd_name[:-1]
-                            full_cmd = f"{base_cmd} {args}".strip()
-                            handle_command_bot1(full_cmd, chat_id)
+                            send_telegram_to_chat(chat_id, f"❌ Пара {coin} не найдена на MEXC")
+                    except:
+                        send_telegram_to_chat(chat_id, "❌ Ошибка проверки пары")
+                    continue
+                if text.startswith('/target1m '):
+                    try:
+                        val = float(text.split()[1])
+                        if 0.3 <= val <= 9:
+                            mexc_target = val
+                            send_telegram_to_chat(chat_id, f"✅ MEXC цель: {mexc_target}%")
                         else:
-                            # Команда без суффикса – первому боту (для обратной совместимости)
-                            handle_command_bot1(text, chat_id)
+                            send_telegram_to_chat(chat_id, "❌ От 0.3 до 9")
+                    except:
+                        send_telegram_to_chat(chat_id, "❌ Пример: /target1m 5")
+                    continue
+                if text.startswith('/interval1m '):
+                    try:
+                        val = int(text.split()[1])
+                        if 10 <= val <= 600:
+                            mexc_interval = val
+                            send_telegram_to_chat(chat_id, f"✅ MEXC интервал: {mexc_interval} сек")
+                        else:
+                            send_telegram_to_chat(chat_id, "❌ От 10 до 600")
+                    except:
+                        send_telegram_to_chat(chat_id, "❌ Пример: /interval1m 120")
+                    continue
+                if text == '/status1m':
+                    status = "✅ работает" if bot1_mexc_running else "⏸ остановлен"
+                    send_telegram_to_chat(chat_id, f"📊 MEXC бот1: {status}\nПара: {mexc_spot}\nЦель: {mexc_target}%\nИнтервал: {mexc_interval} сек")
+                    continue
+
+                # --- Команды для первого бота ByBit (суффикс 1b) ---
+                if text == '/start1b':
+                    bot1_bybit_running = True
+                    send_telegram_to_chat(chat_id, "✅ Первый бот ByBit запущен")
+                    continue
+                if text == '/stop1b':
+                    bot1_bybit_running = False
+                    send_telegram_to_chat(chat_id, "⏸ Первый бот ByBit остановлен")
+                    continue
+                if text.startswith('/set1b '):
+                    coin = text.replace('/set1b ', '').upper()
+                    spot = f"{coin}/USDT"
+                    future = f"{coin}/USDT:USDT"
+                    try:
+                        exchange_bybit.load_markets(reload=True)
+                        if spot in exchange_bybit.markets and future in exchange_bybit.markets:
+                            bybit_spot = spot
+                            bybit_future = future
+                            send_telegram_to_chat(chat_id, f"✅ ByBit пара изменена на {bybit_spot}")
+                        else:
+                            send_telegram_to_chat(chat_id, f"❌ Пара {coin} не найдена на ByBit")
+                    except:
+                        send_telegram_to_chat(chat_id, "❌ Ошибка проверки пары")
+                    continue
+                if text.startswith('/target1b '):
+                    try:
+                        val = float(text.split()[1])
+                        if 0.1 <= val <= 9:
+                            bybit_target = val
+                            send_telegram_to_chat(chat_id, f"✅ ByBit цель: {bybit_target}%")
+                        else:
+                            send_telegram_to_chat(chat_id, "❌ От 0.1 до 9")
+                    except:
+                        send_telegram_to_chat(chat_id, "❌ Пример: /target1b 0.5")
+                    continue
+                if text.startswith('/interval1b '):
+                    try:
+                        val = int(text.split()[1])
+                        if 10 <= val <= 600:
+                            bybit_interval = val
+                            send_telegram_to_chat(chat_id, f"✅ ByBit интервал: {bybit_interval} сек")
+                        else:
+                            send_telegram_to_chat(chat_id, "❌ От 10 до 600")
+                    except:
+                        send_telegram_to_chat(chat_id, "❌ Пример: /interval1b 120")
+                    continue
+                if text == '/status1b':
+                    status = "✅ работает" if bot1_bybit_running else "⏸ остановлен"
+                    send_telegram_to_chat(chat_id, f"📊 ByBit бот1: {status}\nПара: {bybit_spot}\nЦель: {bybit_target}%\nИнтервал: {bybit_interval} сек")
+                    continue
+
+                # --- Команды для второго бота MEXC (сканер) суффикс 2m ---
+                if text == '/start2m':
+                    bot2_mexc_running = True
+                    send_telegram_to_chat(chat_id, "✅ Сканер MEXC запущен")
+                    continue
+                if text == '/stop2m':
+                    bot2_mexc_running = False
+                    send_telegram_to_chat(chat_id, "⏸ Сканер MEXC остановлен")
+                    continue
+                if text.startswith('/threshold2m '):
+                    try:
+                        val = float(text.split()[1])
+                        if 0.5 <= val <= 10:
+                            mexc_min_spread = val
+                            send_telegram_to_chat(chat_id, f"✅ MEXC мин. спред: {mexc_min_spread}%")
+                        else:
+                            send_telegram_to_chat(chat_id, "❌ От 0.5 до 10")
+                    except:
+                        send_telegram_to_chat(chat_id, "❌ Пример: /threshold2m 2.0")
+                    continue
+                if text.startswith('/interval2m '):
+                    try:
+                        val = int(text.split()[1])
+                        if 10 <= val <= 300:
+                            mexc_scan_interval = val
+                            send_telegram_to_chat(chat_id, f"✅ MEXC интервал сканирования: {mexc_scan_interval} сек")
+                        else:
+                            send_telegram_to_chat(chat_id, "❌ От 10 до 300")
+                    except:
+                        send_telegram_to_chat(chat_id, "❌ Пример: /interval2m 60")
+                    continue
+                if text == '/status2m':
+                    status = "✅ работает" if bot2_mexc_running else "⏸ остановлен"
+                    msg = f"📊 Сканер MEXC: {status}\nМин. спред: {mexc_min_spread}%\nИнтервал: {mexc_scan_interval} сек\nСигналов: {len(mexc_last_signals)}"
+                    if mexc_last_signals:
+                        msg += "\nПоследние сигналы:\n"
+                        for s in mexc_last_signals[-5:]:
+                            msg += f"{s['pair']}: {s['spread']:.2f}% в {s['time']}\n"
+                    send_telegram_to_chat(chat_id, msg)
+                    continue
+                if text == '/last2m':
+                    if not mexc_last_signals:
+                        send_telegram_to_chat(chat_id, "📭 Нет сигналов MEXC")
+                    else:
+                        msg = "🔔 Последние сигналы MEXC:\n"
+                        for s in mexc_last_signals[-5:]:
+                            msg += f"{s['pair']}: {s['spread']:.2f}% в {s['time']}\n"
+                        send_telegram_to_chat(chat_id, msg)
+                    continue
+
+                # --- Команды для второго бота ByBit (сканер) суффикс 2b ---
+                if text == '/start2b':
+                    bot2_bybit_running = True
+                    send_telegram_to_chat(chat_id, "✅ Сканер ByBit запущен")
+                    continue
+                if text == '/stop2b':
+                    bot2_bybit_running = False
+                    send_telegram_to_chat(chat_id, "⏸ Сканер ByBit остановлен")
+                    continue
+                if text.startswith('/threshold2b '):
+                    try:
+                        val = float(text.split()[1])
+                        if 0.2 <= val <= 10:
+                            bybit_min_spread = val
+                            send_telegram_to_chat(chat_id, f"✅ ByBit мин. спред: {bybit_min_spread}%")
+                        else:
+                            send_telegram_to_chat(chat_id, "❌ От 0.2 до 10")
+                    except:
+                        send_telegram_to_chat(chat_id, "❌ Пример: /threshold2b 0.5")
+                    continue
+                if text.startswith('/interval2b '):
+                    try:
+                        val = int(text.split()[1])
+                        if 10 <= val <= 300:
+                            bybit_scan_interval = val
+                            send_telegram_to_chat(chat_id, f"✅ ByBit интервал сканирования: {bybit_scan_interval} сек")
+                        else:
+                            send_telegram_to_chat(chat_id, "❌ От 10 до 300")
+                    except:
+                        send_telegram_to_chat(chat_id, "❌ Пример: /interval2b 60")
+                    continue
+                if text == '/status2b':
+                    status = "✅ работает" if bot2_bybit_running else "⏸ остановлен"
+                    msg = f"📊 Сканер ByBit: {status}\nМин. спред: {bybit_min_spread}%\nИнтервал: {bybit_scan_interval} сек\nСигналов: {len(bybit_last_signals)}"
+                    if bybit_last_signals:
+                        msg += "\nПоследние сигналы:\n"
+                        for s in bybit_last_signals[-5:]:
+                            msg += f"{s['pair']}: {s['spread']:.2f}% в {s['time']}\n"
+                    send_telegram_to_chat(chat_id, msg)
+                    continue
+                if text == '/last2b':
+                    if not bybit_last_signals:
+                        send_telegram_to_chat(chat_id, "📭 Нет сигналов ByBit")
+                    else:
+                        msg = "🔔 Последние сигналы ByBit:\n"
+                        for s in bybit_last_signals[-5:]:
+                            msg += f"{s['pair']}: {s['spread']:.2f}% в {s['time']}\n"
+                        send_telegram_to_chat(chat_id, msg)
+                    continue
+
+                # --- Помощь ---
+                if text == '/help':
+                    help_txt = """
+<b>🤖 Управление объединённым ботом (MEXC + ByBit)</b>
+
+<b>Глобальные:</b>
+/start – запустить все боты
+/stop – остановить все
+
+<b>Первый бот (одна пара) MEXC:</b>
+/start1m, /stop1m
+/set1m BTC – сменить пару
+/target1m 5 – цель (%)
+/interval1m 120 – интервал (сек)
+/status1m
+
+<b>Первый бот (одна пара) ByBit:</b>
+/start1b, /stop1b
+/set1b BTC, /target1b 0.5, /interval1b 120, /status1b
+
+<b>Второй бот (сканер) MEXC:</b>
+/start2m, /stop2m, /status2m
+/threshold2m 2.0 – мин. спред (%)
+/interval2m 60 – интервал между циклами (сек)
+/last2m – последние 5 сигналов
+
+<b>Второй бот (сканер) ByBit:</b>
+/start2b, /stop2b, /status2b
+/threshold2b 0.5, /interval2b 60, /last2b
+"""
+                    send_telegram_to_chat(chat_id, help_txt)
+                    continue
+
+                # Неизвестная команда
+                send_telegram_to_chat(chat_id, "❌ Неизвестная команда. /help")
             time.sleep(1)
         except Exception as e:
-            print(f"❌ Ошибка в polling: {e}")
+            print(f"Ошибка в обработчике: {e}")
             time.sleep(5)
 
 # ==================================================
-# ЗАПУСК
+# ЗАПУСК ВСЕХ ПОТОКОВ
 # ==================================================
 if __name__ == "__main__":
-    # Запускаем поток первого бота
-    threading.Thread(target=bot1_loop, daemon=True).start()
-    # Создаём и запускаем второго бота
-    bot2 = ScannerBot(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID)
-    threading.Thread(target=bot2.run, daemon=True).start()
+    print("="*60)
+    print("ОБЪЕДИНЁННЫЙ АРБИТРАЖНЫЙ БОТ (MEXC + ByBit)")
+    print("="*60)
+    # Создаём объекты бирж (глобальные) для последующего использования в командах
+    exchange_mexc = ccxt.mexc({'enableRateLimit': True})
+    exchange_bybit = ccxt.bybit({'enableRateLimit': True, 'options': {'defaultType': 'swap'}})
+    # Загружаем рынки (асинхронно, но в фоне)
+    def load_markets_async():
+        global exchange_mexc, exchange_bybit
+        exchange_mexc.load_markets()
+        exchange_bybit.load_markets()
+    threading.Thread(target=load_markets_async, daemon=True).start()
+    
+    # Запускаем все потоки ботов
+    threading.Thread(target=bot1_mexc_loop, daemon=True).start()
+    threading.Thread(target=bot1_bybit_loop, daemon=True).start()
+    threading.Thread(target=bot2_mexc_loop, daemon=True).start()
+    threading.Thread(target=bot2_bybit_loop, daemon=True).start()
     # Запускаем обработчик команд
-    telegram_polling(bot2)
+    handle_commands()
