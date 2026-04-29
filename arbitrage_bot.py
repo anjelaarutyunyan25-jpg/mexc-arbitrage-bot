@@ -3,9 +3,7 @@ import time
 from datetime import datetime
 import requests
 import threading
-import re
 import os
-import sys
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # ========== ДЛЯ RENDER / UPTIMEROBOT (HEALTH CHECK) ==========
@@ -36,9 +34,9 @@ TELEGRAM_CHAT_ID = "1540385721"  # Ваш личный ID (для уведомл
 ENABLE_TELEGRAM = True
 
 # ========== ЗАЩИТА ПАРОЛЕМ ==========
-SECRET_PASSWORD = "1983"   # Смените на свой пароль
-authorized_users = set()              # Хранит ID авторизованных пользователей
-pending_password = {}                 # {chat_id: ожидание ввода пароля}
+SECRET_PASSWORD = "MySecretPass123"   # Смените на свой пароль
+authorized_users = set()
+pending_password = {}
 
 def is_authorized(chat_id):
     return chat_id in authorized_users
@@ -61,10 +59,9 @@ def check_password(chat_id, text):
 # ==================================================
 # ПЕРВЫЙ БОТ (АРБИТРАЖ ПО ОДНОЙ ПАРЕ) – ByBit
 # ==================================================
-# Глобальные переменные первого бота
 spot_symbol = "BTC/USDT"
-futures_symbol = "BTC/USDT:USDT"  # !!! ФОРМАТ ДЛЯ ФЬЮЧЕРСОВ
-target_spread_percent = 0.5       # Целевой спред (%) — для Bybit стоит меньше
+futures_symbol = "BTC/USDT:USDT"
+target_spread_percent = 0.5
 check_interval = 120
 alert_levels = [0.4, 0.3, 0.2, 0.1]
 
@@ -118,7 +115,7 @@ def is_valid_pair(coin_symbol):
         return False, None, None
 
 def handle_command_bot1(text, chat_id):
-    global spot_symbol, futures_symbol, target_spread_percent, check_interval, last_alert, spread_history
+    global spot_symbol, futures_symbol, target_spread_percent, check_interval, last_alert, spread_history, bot1_running
 
     text = text.strip().lower()
     print(f"📩 БОТ1 команда: {text}")
@@ -126,50 +123,48 @@ def handle_command_bot1(text, chat_id):
     # Клавиатура
     main_keyboard = {
         "keyboard": [
-            ["/status", "/check"],
-            ["/set BTC", "/set ETH", "/set SOL"],
-            ["/target", "/interval", "/pairs"],
-            ["/reset", "/clean", "/help"]
+            ["/status1", "/check1"],
+            ["/set1 BTC", "/set1 ETH", "/set1 SOL"],
+            ["/target1", "/interval1", "/pairs1"],
+            ["/reset1", "/clean1", "/help1"]
         ],
         "resize_keyboard": True
     }
     hide_keyboard = {"remove_keyboard": True}
 
     if text == '/start':
-        message = f"""
-🤖 <b>АРБИТРАЖНЫЙ БОТ ByBit</b>
+        # Запуск цикла бота #1
+        bot1_running = True
+        send_telegram_to_chat(chat_id, "✅ Бот #1 запущен (мониторинг возобновлён)")
+        return True
 
-📊 <b>Текущая пара:</b> {spot_symbol}
-🎯 <b>Цель:</b> {target_spread_percent}%
-⏰ <b>Интервал:</b> {check_interval} сек
-
-<b>Команды доступны по кнопкам ↓</b>
-"""
-        send_telegram_to_chat(chat_id, message, reply_markup=main_keyboard)
+    elif text == '/stop':
+        # Остановка цикла бота #1
+        bot1_running = False
+        send_telegram_to_chat(chat_id, "⏸ Бот #1 остановлен. /start1 - возобновить")
         return True
 
     elif text == '/help':
         message = """
-📚 <b>Помощь</b>
+📚 <b>Помощь (бот #1 - арбитраж по одной паре ByBit)</b>
 
-/set BTC – сменить пару (Bitcoin)
-/set ETH – Ethereum  
-/set SOL – Solana
-/set VANRY – Vanry
-/status – текущий спред
-/check – проверить статус пары
-/target 5 – установить цель (%)
-/interval 30 – интервал проверки
-/pairs – список популярных пар
-/reset – сбросить историю
-/clean – очистить бота
-/hide – скрыть клавиатуру
+/start1 – запустить мониторинг (если остановлен)
+/stop1 – остановить мониторинг
+/set1 BTC – сменить пару
+/status1 – текущий спред
+/check1 – проверить статус пары
+/target1 0.5 – установить цель (%)
+/interval1 30 – интервал проверки (сек)
+/pairs1 – список популярных пар
+/reset1 – сбросить историю
+/clean1 – очистить бота
+/hide1 – скрыть клавиатуру
 """
         send_telegram_to_chat(chat_id, message, reply_markup=main_keyboard)
         return True
 
     elif text == '/hide':
-        send_telegram_to_chat(chat_id, "⌨️ Клавиатура скрыта. /start – показать.", reply_markup=hide_keyboard)
+        send_telegram_to_chat(chat_id, "⌨️ Клавиатура скрыта. /help1 – показать.", reply_markup=hide_keyboard)
         return True
 
     elif text == '/pairs':
@@ -181,7 +176,7 @@ def handle_command_bot1(text, chat_id):
 Мемкоины: PEPE, SHIB, DOGE, WIF, FLOKI
 Новые: WLD, SUI, TON, APT, ARB, OP, VANRY
 
-💡 Используйте: /set НАЗВАНИЕ (например /set VANRY)
+💡 Используйте: /set1 НАЗВАНИЕ (например /set1 VANRY)
 """
         send_telegram_to_chat(chat_id, message)
         return True
@@ -194,7 +189,6 @@ def handle_command_bot1(text, chat_id):
                 status = "✅ ЦЕЛЬ ДОСТИГНУТА!"
             else:
                 status = f"📉 Нужно снижение: {need:.2f}%"
-
             trend_text = ""
             if len(spread_history) >= 2:
                 trend = spread_history[-1] - spread_history[-2]
@@ -204,9 +198,9 @@ def handle_command_bot1(text, chat_id):
                     trend_text = "📈 Спред растет"
                 else:
                     trend_text = "➡️ Спред стабилен"
-
+            state = "✅ РАБОТАЕТ" if bot1_running else "⏸ ОСТАНОВЛЕН"
             message = f"""
-📊 <b>СТАТУС БОТА</b>
+📊 <b>СТАТУС БОТА #1</b>
 
 <b>Пара:</b> {spot_symbol}
 <b>Текущий спред:</b> {spread:+.2f}%
@@ -215,6 +209,7 @@ def handle_command_bot1(text, chat_id):
 <b>Тренд:</b> {trend_text}
 <b>Интервал:</b> {check_interval} сек
 <b>Действие:</b> {current_spread_data.get('action', '-')}
+<b>Состояние:</b> {state}
 """
         else:
             message = "⏳ Данные еще не получены, подождите..."
@@ -251,7 +246,7 @@ def handle_command_bot1(text, chat_id):
     elif text == '/clean':
         spread_history = []
         last_alert = None
-        send_telegram_to_chat(chat_id, "🧹 Бот очищен!")
+        send_telegram_to_chat(chat_id, "🧹 Бот #1 очищен!")
         return True
 
     elif text.startswith('/set '):
@@ -265,7 +260,7 @@ def handle_command_bot1(text, chat_id):
             last_alert = None
             spread_history = []
             message = f"""
-✅ <b>ПАРА ИЗМЕНЕНА!</b>
+✅ <b>ПАРА ИЗМЕНЕНА (бот #1)</b>
 
 <b>Было:</b> {old_pair}
 <b>Стало:</b> {spot_symbol}
@@ -276,7 +271,7 @@ def handle_command_bot1(text, chat_id):
 """
             send_telegram_to_chat(chat_id, message)
         else:
-            message = f"❌ ПАРА {coin} НЕ НАЙДЕНА\n💡 /pairs - список популярных пар"
+            message = f"❌ ПАРА {coin} НЕ НАЙДЕНА\n💡 /pairs1 - список популярных пар"
             send_telegram_to_chat(chat_id, message)
         return True
 
@@ -291,7 +286,7 @@ def handle_command_bot1(text, chat_id):
                 message = "❌ Значение должно быть от 0.3 до 9.0"
                 send_telegram_to_chat(chat_id, message)
         except:
-            message = "❌ Неверный формат. Пример: /target 9"
+            message = "❌ Неверный формат. Пример: /target1 0.8"
             send_telegram_to_chat(chat_id, message)
         return True
 
@@ -306,13 +301,13 @@ def handle_command_bot1(text, chat_id):
                 message = "❌ Значение должно быть от 5 до 600"
                 send_telegram_to_chat(chat_id, message)
         except:
-            message = "❌ Неверный формат. Пример: /interval 30"
+            message = "❌ Неверный формат. Пример: /interval1 30"
             send_telegram_to_chat(chat_id, message)
         return True
 
     else:
         if text.startswith('/'):
-            send_telegram_to_chat(chat_id, f"❌ Неизвестная команда: {text}\n/help", reply_markup=main_keyboard)
+            send_telegram_to_chat(chat_id, f"❌ Неизвестная команда для бота #1: {text}\n/help1", reply_markup=main_keyboard)
         return False
 
 def bot1_loop():
@@ -323,20 +318,21 @@ def bot1_loop():
     print("="*50)
     print("📡 Подключение к ByBit...")
     
-    # --- ОСНОВНОЕ ИЗМЕНЕНИЕ: НАСТРОЙКИ ДЛЯ ФЬЮЧЕРСОВ ---
     exchange = ccxt.bybit({
         'enableRateLimit': True,
         'options': {
-            'defaultType': 'swap',   # 'swap' для бессрочных фьючерсов
-            'defaultSubType': 'linear', # USDT-маржинальные контракты
+            'defaultType': 'swap',
+            'defaultSubType': 'linear',
             'defaultSettle': 'USDT'
         }
     })
+    print("🔗 API ByBit public URL:", exchange.urls['api']['public'])
+    
     print("📡 Загрузка рынков...")
     exchange.load_markets()
     print("✅ Биржа ByBit подключена!")
 
-    send_telegram(f"✅ АРБИТРАЖНЫЙ БОТ (ByBit) ЗАПУЩЕН!\n\n📊 Слежу за {spot_symbol}\n🎯 Цель: {target_spread_percent}%\n\n💡 /set ЛЮБАЯ_МОНЕТА - сменить пару\n📋 /help - все команды")
+    send_telegram(f"✅ АРБИТРАЖНЫЙ БОТ #1 (ByBit) ЗАПУЩЕН!\n\n📊 Слежу за {spot_symbol}\n🎯 Цель: {target_spread_percent}%\n\n💡 /set1 ЛЮБАЯ_МОНЕТА - сменить пару\n📋 /help1 - все команды")
 
     print(f"\n📊 Текущая пара: {spot_symbol}")
     print(f"🎯 Цель: {target_spread_percent}%")
@@ -392,7 +388,7 @@ def bot1_loop():
                     if last_alert != "target":
                         profit = spread - 0.15
                         msg = f"""
-🎯 <b>ЦЕЛЬ ДОСТИГНУТА!</b> 🎯
+🎯 <b>ЦЕЛЬ ДОСТИГНУТА (бот #1)!</b> 🎯
 ━━━━━━━━━━━━━━━━━━━━━
 📊 {spot_symbol}
 📈 <b>Спред:</b> {spread:+.2f}%
@@ -426,18 +422,18 @@ class ScannerBot:
     def __init__(self, token, default_chat_id):
         self.token = token
         self.default_chat_id = default_chat_id
-        # --- ВАЖНО: Настройки для сканера ByBit ---
         self.exchange = ccxt.bybit({
             'enableRateLimit': True,
             'options': {
-                'defaultType': 'swap',   # для работы с фьючерсами
+                'defaultType': 'swap',
                 'defaultSubType': 'linear'
             }
         })
         print("📡 Бот #2: загрузка рынков ByBit...")
+        print("🔗 API ByBit public URL:", self.exchange.urls['api']['public'])
         self.exchange.load_markets()
         
-        self.min_spread_percent = 0.5   # для ByBit спреды меньше
+        self.min_spread_percent = 0.5
         self.sleep_between_cycles = 10
         self.is_scanning = True
         self.last_signals = []
@@ -446,7 +442,6 @@ class ScannerBot:
         spot_pairs = []
         for symbol in self.exchange.markets:
             market = self.exchange.markets[symbol]
-            # Отбираем только активные спотовые пары USDT
             if symbol.endswith('/USDT') and market.get('spot') and market.get('active'):
                 spot_pairs.append(symbol)
         print(f"📈 Спотовых пар: {len(spot_pairs)}")
@@ -455,11 +450,8 @@ class ScannerBot:
         for spot in spot_pairs:
             base = spot.replace('/USDT', '')
             future = f"{base}/USDT:USDT"
-            # Проверяем, что фьючерсный контракт существует на бирже
             if future in self.exchange.markets:
                 self.trading_pairs.append({'spot': spot, 'future': future, 'base': base})
-            else:
-                print(f"⚠️ Пропускаем {spot}: фьючерс {future} не найден")
         print(f"🔄 Пар для сканирования: {len(self.trading_pairs)}")
         
     def get_spread(self, spot_symbol, futures_symbol):
@@ -538,7 +530,6 @@ class ScannerBot:
             return None
     
     def handle_command(self, text, chat_id):
-        """Команды для второго бота (text уже без суффикса '2')"""
         text = text.strip().lower()
         print(f"📩 БОТ2 команда: {text}")
         
@@ -596,7 +587,7 @@ class ScannerBot:
         elif text.startswith('/threshold '):
             try:
                 val = float(text.replace('/threshold ', ''))
-                if 0.2 <= val <= 9.0:  # Диапазон для ByBit
+                if 0.2 <= val <= 9.0:
                     self.min_spread_percent = val
                     send_telegram_to_chat(chat_id, f"✅ Мин. спред: {val}% | Чистая прибыль: {val - 0.15:.2f}%")
                 else:
@@ -608,7 +599,7 @@ class ScannerBot:
         elif text.startswith('/interval '):
             try:
                 val = int(text.replace('/interval ', ''))
-                if 5 <= val <= 300:  # Можно проверять чаще
+                if 5 <= val <= 300:
                     self.sleep_between_cycles = val
                     send_telegram_to_chat(chat_id, f"✅ Интервал: {val} сек")
                 else:
@@ -656,7 +647,7 @@ class ScannerBot:
                 time.sleep(10)
 
 # ==================================================
-# ГЛАВНЫЙ ОБРАБОТЧИК ТЕЛЕГРАМ (С ПРОВЕРКОЙ ПАРОЛЯ)
+# ГЛАВНЫЙ ОБРАБОТЧИК ТЕЛЕГРАМ
 # ==================================================
 def telegram_polling(bot2):
     global bot1_running
@@ -671,12 +662,10 @@ def telegram_polling(bot2):
                     chat_id = message['chat']['id']
                     text = message.get('text', '')
                     
-                    # --- Обработка ввода пароля (если пользователь в режиме ожидания) ---
                     if chat_id in pending_password:
                         check_password(chat_id, text)
                         continue
                     
-                    # --- Проверка авторизации (кроме команды /register) ---
                     if not is_authorized(chat_id):
                         if text.startswith('/register'):
                             start_password_flow(chat_id)
@@ -684,9 +673,8 @@ def telegram_polling(bot2):
                             send_telegram_to_chat(chat_id, "🔐 Доступ запрещён. Для использования бота отправьте команду /register и введите пароль.")
                         continue
                     
-                    # --- Обработка команд ---
                     if text.startswith('/'):
-                        # Глобальные команды для обоих ботов
+                        # Глобальные команды (управляют обоими ботами)
                         if text == '/start':
                             bot1_running = True
                             bot2.is_scanning = True
@@ -712,7 +700,7 @@ def telegram_polling(bot2):
                             full_cmd = f"{base_cmd} {args}".strip()
                             handle_command_bot1(full_cmd, chat_id)
                         else:
-                            # Команда без суффикса – первому боту
+                            # Команда без суффикса – первому боту (для обратной совместимости)
                             handle_command_bot1(text, chat_id)
             time.sleep(1)
         except Exception as e:
@@ -720,15 +708,13 @@ def telegram_polling(bot2):
             time.sleep(5)
 
 # ==================================================
-# ЗАПУСК ВСЕГО
+# ЗАПУСК
 # ==================================================
 if __name__ == "__main__":
-    # Запускаем первый бот в потоке
+    # Запускаем поток первого бота
     threading.Thread(target=bot1_loop, daemon=True).start()
-    
-    # Создаём и запускаем второй бот в потоке
+    # Создаём и запускаем второго бота
     bot2 = ScannerBot(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID)
     threading.Thread(target=bot2.run, daemon=True).start()
-    
-    # Запускаем обработчик команд в главном потоке
+    # Запускаем обработчик команд
     telegram_polling(bot2)
