@@ -29,7 +29,7 @@ threading.Thread(target=run_health_server, daemon=True).start()
 # НАСТРОЙКИ TELEGRAM
 # ==================================================
 TELEGRAM_TOKEN = "8751313465:AAEKdudEaxKwNcwpB2FSThSRkut7L4KRvSI"
-TELEGRAM_CHAT_ID = "1540385721"          # Ваш ID
+TELEGRAM_CHAT_ID = "1540385721"          # Ваш ID (только для уведомлений, не для проверки доступа)
 ENABLE_TELEGRAM = True
 
 # ==================================================
@@ -45,7 +45,7 @@ bot2_bybit_running = True     # второй бот ByBit (сканер всех
 exchange_mexc = None
 exchange_bybit = None
 
-# Данные для первого бота MEXC (одна пара)
+# Данные для первого бота MEXC (одна пары)
 mexc_spot = "BTC/USDT"
 mexc_future = "BTC/USDT:USDT"
 mexc_target = 5.0
@@ -348,7 +348,7 @@ def bot2_bybit_loop():
             time.sleep(10)
 
 # ==================================================
-# ОБРАБОТЧИК КОМАНД TELEGRAM
+# ОБРАБОТЧИК КОМАНД TELEGRAM (БЕЗ ПАРОЛЯ)
 # ==================================================
 def handle_commands():
     global bot1_mexc_running, bot1_bybit_running, bot2_mexc_running, bot2_bybit_running
@@ -366,9 +366,6 @@ def handle_commands():
                 if not msg:
                     continue
                 chat_id = msg['chat']['id']
-                if chat_id != TELEGRAM_CHAT_ID:
-                    send_telegram_to_chat(chat_id, "🚫 Доступ запрещён.")
-                    continue
                 text = msg.get('text', '').strip().lower()
                 if not text.startswith('/'):
                     continue
@@ -588,7 +585,7 @@ def handle_commands():
                 # --- Помощь ---
                 if text == '/help':
                     help_txt = """
-<b>🤖 Управление объединённым ботом (MEXC + ByBit)</b>
+<b>🤖 Управление объединённым ботом (MEXC + ByBit) – открытый доступ</b>
 
 <b>Глобальные:</b>
 /start – запустить все боты
@@ -630,7 +627,7 @@ def handle_commands():
 # ==================================================
 if __name__ == "__main__":
     print("="*60)
-    print("ОБЪЕДИНЁННЫЙ АРБИТРАЖНЫЙ БОТ (MEXC + ByBit)")
+    print("ОБЪЕДИНЁННЫЙ АРБИТРАЖНЫЙ БОТ (MEXC + ByBit) – БЕЗ ПАРОЛЯ")
     print("="*60)
     # Создаём объекты бирж (глобальные) для последующего использования в командах
     exchange_mexc = ccxt.mexc({'enableRateLimit': True})
