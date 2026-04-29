@@ -34,7 +34,7 @@ TELEGRAM_CHAT_ID = "1540385721"  # Ваш личный ID (для уведомл
 ENABLE_TELEGRAM = True
 
 # ========== ЗАЩИТА ПАРОЛЕМ ==========
-SECRET_PASSWORD = "MySecretPass123"   # Смените на свой пароль
+SECRET_PASSWORD = "1983"   # Смените на свой пароль
 authorized_users = set()              # Хранит ID авторизованных пользователей
 pending_password = {}                 # {chat_id: ожидание ввода пароля}
 
