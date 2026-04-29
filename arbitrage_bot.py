@@ -8,51 +8,14 @@ import os
 import sys
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-# ========== ДЛЯ RENDER / UPTIMEROBOT (HEALTH CHECK) ==========
-PORT = int(os.environ.get('PORT', 10000))
-
-class HealthHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b'Bot is running')
-    
-    def do_HEAD(self):
-        # Просто отвечаем 200 без тела – всё, что нужно UptimeRobot
-        self.send_response(200)
-        self.end_headers()
-
-def run_health_server():
-    server = HTTPServer(('0.0.0.0', PORT), HealthHandler)
-    print(f"✅ HTTP сервер запущен на порту {PORT}")
-    server.serve_forever()
-
-threading.Thread(target=run_health_server, daemon=True).start()
-# ================================================================
-
-# ==================================================
-# НАСТРОЙКИ (БЕЗ ИЗМЕНЕНИЙ, КАК БЫЛО)
-# ==================================================
-
+# ========== ОБЩИЕ НАСТРОЙКИ ==========
 TELEGRAM_TOKEN = "8751313465:AAEKdudEaxKwNcwpB2FSThSRkut7L4KRvSI"
 TELEGRAM_CHAT_ID = "1540385721"
 ENABLE_TELEGRAM = True
 
-SPOT_SYMBOL = "BTC/USDT"
-FUTURES_SYMBOL = "BTC/USDT:USDT"
+PORT = int(os.environ.get('PORT', 10000))
 
-TARGET_SPREAD_PERCENT = 5
-CHECK_INTERVAL = 120
-ALERT_LEVELS = [1.0, 0.8, 0.6, 0.5]
-
-# ==================================================
-
-last_alert = None
-current_spread_data = None
-bot_running = True
-spread_history = []
-exchange = None
-
+# ========== ОБЩИЕ ФУНКЦИИ TELEGRAM ==========
 def send_telegram(message):
     if not ENABLE_TELEGRAM:
         return
@@ -83,76 +46,138 @@ def get_updates(offset=None):
         print(f"❌ Ошибка получения обновлений: {e}")
         return []
 
-def is_valid_pair(coin_symbol):
-    global exchange
-    try:
-        exchange.load_markets(reload=True)
-        spot_pair = f"{coin_symbol}/USDT"
-        future_pair = f"{coin_symbol}/USDT:USDT"
-        if spot_pair in exchange.markets and future_pair in exchange.markets:
-            return True, spot_pair, future_pair
-        return False, None, None
-    except Exception as e:
-        print(f"Ошибка проверки пары: {e}")
-        return False, None, None
+# ========== HEALTH CHECK СЕРВЕР (ДЛЯ RENDER) ==========
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b'Bot is running')
+    def do_HEAD(self):
+        self.send_response(200)
+        self.end_headers()
 
-def handle_command(text, chat_id):
-    global SPOT_SYMBOL, FUTURES_SYMBOL, TARGET_SPREAD_PERCENT, CHECK_INTERVAL, last_alert, spread_history
+def run_health_server():
+    server = HTTPServer(('0.0.0.0', PORT), HealthHandler)
+    print(f"✅ HTTP сервер запущен на порту {PORT}")
+    server.serve_forever()
 
-    text = text.strip().lower()
-    print(f"📩 Получена команда: {text}")
+# ========== БОТ №1 (АРБИТРАЖ ПО ОДНОЙ ПАРЕ) ==========
+class ArbitrageBot:
+    def __init__(self, token, default_chat_id):
+        self.token = token
+        self.default_chat_id = default_chat_id
+        self.exchange = ccxt.mexc({'enableRateLimit': True})
+        print("📡 Бот #1: загрузка рынков...")
+        self.exchange.load_markets()
+        
+        # Настройки
+        self.spot_symbol = "BTC/USDT"
+        self.futures_symbol = "BTC/USDT:USDT"
+        self.target_spread_percent = 5
+        self.check_interval = 120
+        self.alert_levels = [1.0, 0.8, 0.6, 0.5]
+        
+        # Состояние
+        self.last_alert = None
+        self.current_spread_data = None
+        self.spread_history = []
+        self.running = True  # управление циклом
+        
+        # Клавиатуры
+        self.main_keyboard = {
+            "keyboard": [
+                ["/status1", "/check1"],
+                ["/set1 BTC", "/set1 ETH", "/set1 SOL"],
+                ["/target1", "/interval1", "/pairs1"],
+                ["/reset1", "/clean1", "/help1"]
+            ],
+            "resize_keyboard": True
+        }
+        self.hide_keyboard = {"remove_keyboard": True}
+        
+    def is_valid_pair(self, coin_symbol):
+        try:
+            self.exchange.load_markets(reload=True)
+            spot_pair = f"{coin_symbol}/USDT"
+            future_pair = f"{coin_symbol}/USDT:USDT"
+            if spot_pair in self.exchange.markets and future_pair in self.exchange.markets:
+                return True, spot_pair, future_pair
+            return False, None, None
+        except Exception as e:
+            print(f"Ошибка проверки пары: {e}")
+            return False, None, None
+    
+    def get_spread(self):
+        try:
+            spot = self.exchange.fetch_order_book(self.spot_symbol)
+            future = self.exchange.fetch_order_book(self.futures_symbol)
+            spot_ask = spot['asks'][0][0]
+            spot_bid = spot['bids'][0][0]
+            future_bid = future['bids'][0][0]
+            future_ask = future['asks'][0][0]
+            spread_long = ((future_bid - spot_ask) / spot_ask) * 100
+            spread_short = ((spot_bid - future_ask) / future_ask) * 100
+            if spread_long > spread_short:
+                return {
+                    'spread': spread_long,
+                    'action': 'Купить СПОТ → Продать ФЬЮЧЕРС',
+                    'buy_price': spot_ask,
+                    'sell_price': future_bid
+                }
+            else:
+                return {
+                    'spread': spread_short,
+                    'action': 'Купить ФЬЮЧЕРС → Продать СПОТ',
+                    'buy_price': future_ask,
+                    'sell_price': spot_bid
+                }
+        except Exception as e:
+            print(f"❌ Бот #1 ошибка получения спреда: {e}")
+            return None
+    
+    def handle_command(self, text, chat_id):
+        """Обработка команд для бота #1 (text уже без суффикса '1')"""
+        text = text.strip().lower()
+        print(f"📩 Бот #1 команда: {text}")
+        
+        if text == '/start':
+            message = f"""
+🤖 <b>АРБИТРАЖНЫЙ БОТ #1 (одна пара)</b>
 
-    # Клавиатура
-    main_keyboard = {
-        "keyboard": [
-            ["/status", "/check"],
-            ["/set BTC", "/set ETH", "/set SOL"],
-            ["/target", "/interval", "/pairs"],
-            ["/reset", "/clean", "/help"]
-        ],
-        "resize_keyboard": True
-    }
-    hide_keyboard = {"remove_keyboard": True}
-
-    if text == '/start':
-        message = f"""
-🤖 <b>АРБИТРАЖНЫЙ БОТ MEXC</b>
-
-📊 <b>Текущая пара:</b> {SPOT_SYMBOL}
-🎯 <b>Цель:</b> {TARGET_SPREAD_PERCENT}%
-⏰ <b>Интервал:</b> {CHECK_INTERVAL} сек
+📊 <b>Текущая пара:</b> {self.spot_symbol}
+🎯 <b>Цель:</b> {self.target_spread_percent}%
+⏰ <b>Интервал:</b> {self.check_interval} сек
 
 <b>Команды доступны по кнопкам ↓</b>
 """
-        send_telegram_to_chat(chat_id, message, reply_markup=main_keyboard)
-        return True
+            send_telegram_to_chat(chat_id, message, reply_markup=self.main_keyboard)
+            return True
+        
+        elif text == '/help':
+            message = """
+📚 <b>Помощь (бот #1)</b>
 
-    elif text == '/help':
-        message = """
-📚 <b>Помощь</b>
-
-/set BTC – сменить пару (Bitcoin)
-/set ETH – Ethereum  
-/set SOL – Solana
-/set VANRY – Vanry
-/status – текущий спред
-/check – проверить статус пары
-/target 5 – установить цель (%)
-/interval 30 – интервал проверки
-/pairs – список популярных пар
-/reset – сбросить историю
-/clean – очистить бота
-/hide – скрыть клавиатуру
+/set1 BTC – сменить пару
+/status1 – текущий спред
+/check1 – проверить статус пары
+/target1 5 – установить цель (%)
+/interval1 30 – интервал проверки
+/pairs1 – список популярных пар
+/reset1 – сбросить историю спреда
+/clean1 – очистить бота
+/stop1 – остановить цикл мониторинга
+/resume1 – возобновить цикл
+/hide1 – скрыть клавиатуру
 """
-        send_telegram_to_chat(chat_id, message, reply_markup=main_keyboard)
-        return True
-
-    elif text == '/hide':
-        send_telegram_to_chat(chat_id, "⌨️ Клавиатура скрыта. /start – показать.", reply_markup=hide_keyboard)
-        return True
-
-    elif text == '/pairs':
-        message = """
+            send_telegram_to_chat(chat_id, message, reply_markup=self.main_keyboard)
+            return True
+        
+        elif text == '/hide':
+            send_telegram_to_chat(chat_id, "⌨️ Клавиатура скрыта. /start1 – показать.", reply_markup=self.hide_keyboard)
+            return True
+        
+        elif text == '/pairs':
+            message = """
 📋 <b>ПОПУЛЯРНЫЕ ПАРЫ НА MEXC</b>
 
 Основные: BTC, ETH, SOL, XRP, DOGE, ADA
@@ -160,145 +185,423 @@ def handle_command(text, chat_id):
 Мемкоины: PEPE, SHIB, DOGE, WIF, FLOKI
 Новые: WLD, SUI, TON, APT, ARB, OP, VANRY
 
-💡 Используйте: /set НАЗВАНИЕ (например /set VANRY)
+💡 Используйте: /set1 НАЗВАНИЕ (например /set1 VANRY)
 """
-        send_telegram_to_chat(chat_id, message)
-        return True
-
-    elif text == '/status':
-        if current_spread_data:
-            spread = current_spread_data.get('spread', 0)
-            need = spread - TARGET_SPREAD_PERCENT
-            if spread <= TARGET_SPREAD_PERCENT:
-                status = "✅ ЦЕЛЬ ДОСТИГНУТА!"
-            else:
-                status = f"📉 Нужно снижение: {need:.2f}%"
-
-            trend_text = ""
-            if len(spread_history) >= 2:
-                trend = spread_history[-1] - spread_history[-2]
-                if trend < -0.05:
-                    trend_text = "📉 Спред снижается"
-                elif trend > 0.05:
-                    trend_text = "📈 Спред растет"
+            send_telegram_to_chat(chat_id, message)
+            return True
+        
+        elif text == '/status':
+            if self.current_spread_data:
+                spread = self.current_spread_data.get('spread', 0)
+                need = spread - self.target_spread_percent
+                if spread <= self.target_spread_percent:
+                    status = "✅ ЦЕЛЬ ДОСТИГНУТА!"
                 else:
-                    trend_text = "➡️ Спред стабилен"
+                    status = f"📉 Нужно снижение: {need:.2f}%"
+                trend_text = ""
+                if len(self.spread_history) >= 2:
+                    trend = self.spread_history[-1] - self.spread_history[-2]
+                    if trend < -0.05:
+                        trend_text = "📉 Спред снижается"
+                    elif trend > 0.05:
+                        trend_text = "📈 Спред растет"
+                    else:
+                        trend_text = "➡️ Спред стабилен"
+                message = f"""
+📊 <b>СТАТУС БОТА #1</b>
 
-            message = f"""
-📊 <b>СТАТУС БОТА</b>
-
-<b>Пара:</b> {SPOT_SYMBOL}
+<b>Пара:</b> {self.spot_symbol}
 <b>Текущий спред:</b> {spread:+.2f}%
-<b>Цель:</b> {TARGET_SPREAD_PERCENT}%
+<b>Цель:</b> {self.target_spread_percent}%
 <b>Статус:</b> {status}
 <b>Тренд:</b> {trend_text}
-<b>Интервал:</b> {CHECK_INTERVAL} сек
-<b>Действие:</b> {current_spread_data.get('action', '-')}
+<b>Интервал:</b> {self.check_interval} сек
+<b>Действие:</b> {self.current_spread_data.get('action', '-')}
 """
-        else:
-            message = "⏳ Данные еще не получены, подождите..."
-        send_telegram_to_chat(chat_id, message)
-        return True
-
-    elif text == '/check':
-        send_telegram_to_chat(chat_id, "🔍 Проверка статуса пары...")
-        try:
-            exchange.load_markets(reload=True)
-            spot_ok = SPOT_SYMBOL in exchange.markets and exchange.markets[SPOT_SYMBOL].get('active')
-            fut_ok = FUTURES_SYMBOL in exchange.markets and exchange.markets[FUTURES_SYMBOL].get('active')
-            coin = SPOT_SYMBOL.replace('/USDT', '')
-            if spot_ok and fut_ok:
-                spot = exchange.fetch_order_book(SPOT_SYMBOL)
-                fut = exchange.fetch_order_book(FUTURES_SYMBOL)
-                spread = ((fut['bids'][0][0] - spot['asks'][0][0]) / spot['asks'][0][0]) * 100
-                message = f"✅ Пара {coin} активна\nСпред: {spread:+.2f}%\nЦель: {TARGET_SPREAD_PERCENT}%"
-                if spread <= TARGET_SPREAD_PERCENT:
-                    profit = spread - 0.15
-                    message += f"\n💰 ЦЕЛЬ! Прибыль: {profit:.2f}%"
             else:
-                message = f"⚠️ Пара {coin} неактивна\nСпот: {'✅' if spot_ok else '❌'}\nФьючерс: {'✅' if fut_ok else '❌'}"
-        except Exception as e:
-            message = f"❌ Ошибка: {e}"
-        send_telegram_to_chat(chat_id, message)
-        return True
-
-    elif text == '/reset':
-        spread_history = []
-        message = "✅ История спреда сброшена!"
-        send_telegram_to_chat(chat_id, message)
-        return True
-
-    elif text == '/clean':
-        spread_history = []
-        last_alert = None
-        message = "🧹 Бот очищен!"
-        send_telegram_to_chat(chat_id, message)
-        return True
-
-    elif text.startswith('/set '):
-        coin = text.replace('/set ', '').upper().strip()
-        send_telegram_to_chat(chat_id, f"🔍 Проверяю {coin}...")
-        is_valid, spot_pair, future_pair = is_valid_pair(coin)
-        if is_valid:
-            old_pair = SPOT_SYMBOL
-            SPOT_SYMBOL = spot_pair
-            FUTURES_SYMBOL = future_pair
-            last_alert = None
-            spread_history = []
-            message = f"""
-✅ <b>ПАРА ИЗМЕНЕНА!</b>
+                message = "⏳ Данные еще не получены, подождите..."
+            send_telegram_to_chat(chat_id, message)
+            return True
+        
+        elif text == '/check':
+            send_telegram_to_chat(chat_id, "🔍 Проверка статуса пары...")
+            try:
+                self.exchange.load_markets(reload=True)
+                spot_ok = self.spot_symbol in self.exchange.markets and self.exchange.markets[self.spot_symbol].get('active')
+                fut_ok = self.futures_symbol in self.exchange.markets and self.exchange.markets[self.futures_symbol].get('active')
+                coin = self.spot_symbol.replace('/USDT', '')
+                if spot_ok and fut_ok:
+                    spot = self.exchange.fetch_order_book(self.spot_symbol)
+                    fut = self.exchange.fetch_order_book(self.futures_symbol)
+                    spread = ((fut['bids'][0][0] - spot['asks'][0][0]) / spot['asks'][0][0]) * 100
+                    message = f"✅ Пара {coin} активна\nСпред: {spread:+.2f}%\nЦель: {self.target_spread_percent}%"
+                    if spread <= self.target_spread_percent:
+                        profit = spread - 0.15
+                        message += f"\n💰 ЦЕЛЬ! Прибыль: {profit:.2f}%"
+                else:
+                    message = f"⚠️ Пара {coin} неактивна\nСпот: {'✅' if spot_ok else '❌'}\nФьючерс: {'✅' if fut_ok else '❌'}"
+            except Exception as e:
+                message = f"❌ Ошибка: {e}"
+            send_telegram_to_chat(chat_id, message)
+            return True
+        
+        elif text == '/reset':
+            self.spread_history = []
+            send_telegram_to_chat(chat_id, "✅ История спреда сброшена!")
+            return True
+        
+        elif text == '/clean':
+            self.spread_history = []
+            self.last_alert = None
+            send_telegram_to_chat(chat_id, "🧹 Бот #1 очищен!")
+            return True
+        
+        elif text.startswith('/set '):
+            coin = text.replace('/set ', '').upper().strip()
+            send_telegram_to_chat(chat_id, f"🔍 Проверяю {coin}...")
+            is_valid, spot_pair, future_pair = self.is_valid_pair(coin)
+            if is_valid:
+                old_pair = self.spot_symbol
+                self.spot_symbol = spot_pair
+                self.futures_symbol = future_pair
+                self.last_alert = None
+                self.spread_history = []
+                message = f"""
+✅ <b>ПАРА ИЗМЕНЕНА (бот #1)</b>
 
 <b>Было:</b> {old_pair}
-<b>Стало:</b> {SPOT_SYMBOL}
-🎯 <b>Цель:</b> {TARGET_SPREAD_PERCENT}%
-⏰ <b>Интервал:</b> {CHECK_INTERVAL} сек
+<b>Стало:</b> {self.spot_symbol}
+🎯 <b>Цель:</b> {self.target_spread_percent}%
+⏰ <b>Интервал:</b> {self.check_interval} сек
 
 <i>Отслеживание начато...</i>
 """
-            send_telegram_to_chat(chat_id, message)
+                send_telegram_to_chat(chat_id, message)
+            else:
+                message = f"❌ ПАРА {coin} НЕ НАЙДЕНА\n💡 /pairs1 - список популярных пар"
+                send_telegram_to_chat(chat_id, message)
+            return True
+        
+        elif text.startswith('/target '):
+            try:
+                new_target = float(text.replace('/target ', ''))
+                if 0.3 <= new_target <= 9.0:
+                    self.target_spread_percent = new_target
+                    send_telegram_to_chat(chat_id, f"✅ Цель изменена: {self.target_spread_percent}%")
+                else:
+                    send_telegram_to_chat(chat_id, "❌ Значение должно быть от 0.3 до 9.0")
+            except:
+                send_telegram_to_chat(chat_id, "❌ Неверный формат. Пример: /target1 9")
+            return True
+        
+        elif text.startswith('/interval '):
+            try:
+                new_interval = int(text.replace('/interval ', ''))
+                if 5 <= new_interval <= 600:
+                    self.check_interval = new_interval
+                    send_telegram_to_chat(chat_id, f"✅ Интервал изменен: {self.check_interval} сек")
+                else:
+                    send_telegram_to_chat(chat_id, "❌ Значение должно быть от 5 до 600")
+            except:
+                send_telegram_to_chat(chat_id, "❌ Неверный формат. Пример: /interval1 30")
+            return True
+        
+        elif text == '/stop':
+            self.running = False
+            send_telegram_to_chat(chat_id, "⏸ Цикл мониторинга бота #1 остановлен. /resume1 - возобновить")
+            return True
+        
+        elif text == '/resume':
+            self.running = True
+            send_telegram_to_chat(chat_id, "✅ Цикл мониторинга бота #1 возобновлен")
+            return True
+        
         else:
-            message = f"❌ ПАРА {coin} НЕ НАЙДЕНА\n💡 /pairs - список популярных пар"
-            send_telegram_to_chat(chat_id, message)
-        return True
+            if text.startswith('/'):
+                send_telegram_to_chat(chat_id, f"❌ Неизвестная команда для бота #1: {text}\n/help1", reply_markup=self.main_keyboard)
+            return False
+    
+    def run(self):
+        """Основной цикл мониторинга"""
+        send_telegram(f"✅ БОТ #1 ЗАПУЩЕН!\n📊 Слежу за {self.spot_symbol}\n🎯 Цель: {self.target_spread_percent}%")
+        print(f"\n🚀 Бот #1 запущен | Пара: {self.spot_symbol} | Цель: {self.target_spread_percent}% | Интервал: {self.check_interval} сек")
+        
+        while True:
+            if not self.running:
+                time.sleep(2)
+                continue
+            try:
+                data = self.get_spread()
+                if data:
+                    self.current_spread_data = data
+                    spread = data['spread']
+                    now = datetime.now().strftime('%H:%M:%S')
+                    self.spread_history.append(spread)
+                    if len(self.spread_history) > 20:
+                        self.spread_history.pop(0)
+                    print(f"🕐 {now} | Бот1 {self.spot_symbol} | Спред: {spread:+.2f}%", end="")
+                    if spread <= self.target_spread_percent:
+                        print(" 🎯 ЦЕЛЬ ДОСТИГНУТА!")
+                        if self.last_alert != "target":
+                            profit = spread - 0.15
+                            msg = f"""
+🎯 <b>ЦЕЛЬ ДОСТИГНУТА (бот #1)!</b> 🎯
+━━━━━━━━━━━━━━━━━━━━━
+📊 {self.spot_symbol}
+📈 <b>Спред:</b> {spread:+.2f}%
+💰 <b>Чистая прибыль:</b> {profit:.2f}%
+⚡ {data['action']}
+━━━━━━━━━━━━━━━━━━━━━
+⚡ ДЕЙСТВУЙТЕ БЫСТРО!
+"""
+                            send_telegram(msg)
+                            self.last_alert = "target"
+                    else:
+                        need = spread - self.target_spread_percent
+                        print(f" | Нужно снижение: {need:.2f}%")
+                        for level in self.alert_levels:
+                            if spread <= level and self.last_alert != level:
+                                msg = f"🔔 {self.spot_symbol}\nСпред снизился до {level}%\nТекущий: {spread:+.2f}%\nОсталось до цели: {need:.2f}%"
+                                send_telegram(msg)
+                                self.last_alert = level
+                                break
+                        if spread > max(self.alert_levels) + 0.3:
+                            self.last_alert = None
+                time.sleep(self.check_interval)
+            except Exception as e:
+                print(f"❌ Бот #1 ошибка: {e}")
+                time.sleep(self.check_interval)
 
-    elif text.startswith('/target '):
+# ========== БОТ №2 (СКАНЕР ВСЕХ ПАР) ==========
+class ScannerBot:
+    def __init__(self, token, default_chat_id):
+        self.token = token
+        self.default_chat_id = default_chat_id
+        self.exchange = ccxt.mexc({'enableRateLimit': True})
+        print("📡 Бот #2: загрузка рынков...")
+        self.exchange.load_markets()
+        
+        # Настройки
+        self.min_spread_percent = 2
+        self.sleep_between_cycles = 10
+        self.is_scanning = True
+        self.last_signals = []
+        
+        # Формируем список пар
+        print("📋 Бот #2: формирую список пар...")
+        spot_pairs = []
+        for symbol in self.exchange.markets:
+            market = self.exchange.markets[symbol]
+            if symbol.endswith('/USDT') and market.get('spot') and market.get('active'):
+                spot_pairs.append(symbol)
+        print(f"📈 Спотовых пар: {len(spot_pairs)}")
+        
+        self.trading_pairs = []
+        for spot in spot_pairs:
+            base = spot.replace('/USDT', '')
+            future = f"{base}/USDT:USDT"
+            self.trading_pairs.append({'spot': spot, 'future': future, 'base': base})
+        print(f"🔄 Пар для сканирования: {len(self.trading_pairs)}")
+        
+    def get_spread(self, spot_symbol, futures_symbol):
         try:
-            new_target = float(text.replace('/target ', ''))
-            if 0.3 <= new_target <= 9.0:
-                TARGET_SPREAD_PERCENT = new_target
-                message = f"✅ Цель изменена: {TARGET_SPREAD_PERCENT}%"
+            orderbook_spot = self.exchange.fetch_order_book(spot_symbol)
+            orderbook_futures = self.exchange.fetch_order_book(futures_symbol)
+            
+            spot_bid = orderbook_spot['bids'][0][0]
+            spot_ask = orderbook_spot['asks'][0][0]
+            futures_bid = orderbook_futures['bids'][0][0]
+            futures_ask = orderbook_futures['asks'][0][0]
+            
+            if spot_ask < futures_bid:
+                spread_pct = ((futures_bid - spot_ask) / spot_ask) * 100
+                if spread_pct > self.min_spread_percent:
+                    net_profit = spread_pct - 0.15
+                    print(f"\n{'='*60}")
+                    print(f"🚨 АРБИТРАЖ (бот #2)! {spot_symbol}")
+                    print(f"📈 Спред: {spread_pct:+.2f}% | 💵 ПРИБЫЛЬ: {net_profit:.2f}%")
+                    print(f"💰 ПОКУПАЙ спот: {spot_ask:.8f}")
+                    print(f"💰 ПРОДАВАЙ фьюч: {futures_bid:.8f}")
+                    print(f"{'='*60}")
+                    
+                    msg = f"""
+🚨 АРБИТРАЖ НАЙДЕН (бот #2)!
+━━━━━━━━━━━━━━━━━━━
+{spot_symbol}
+Спред: {spread_pct:+.2f}%
+Чистая прибыль: {net_profit:.2f}%
+Покупай спот: {spot_ask:.8f}
+Продавай фьюч: {futures_bid:.8f}
+"""
+                    send_telegram(msg)
+                    self.last_signals.append({
+                        'pair': spot_symbol,
+                        'spread': spread_pct,
+                        'profit': net_profit,
+                        'time': datetime.now().strftime('%H:%M:%S')
+                    })
+                    if len(self.last_signals) > 10:
+                        self.last_signals.pop(0)
+                return spread_pct
+                
+            elif futures_ask < spot_bid:
+                spread_pct = ((spot_bid - futures_ask) / futures_ask) * 100
+                if spread_pct > self.min_spread_percent:
+                    net_profit = spread_pct - 0.15
+                    print(f"\n{'='*60}")
+                    print(f"🚨 АРБИТРАЖ (бот #2)! {spot_symbol}")
+                    print(f"📈 Спред: {spread_pct:+.2f}% | 💵 ПРИБЫЛЬ: {net_profit:.2f}%")
+                    print(f"💰 ПОКУПАЙ фьюч: {futures_ask:.8f}")
+                    print(f"💰 ПРОДАВАЙ спот: {spot_bid:.8f}")
+                    print(f"{'='*60}")
+                    
+                    msg = f"""
+🚨 АРБИТРАЖ НАЙДЕН (бот #2)!
+━━━━━━━━━━━━━━━━━━━
+{spot_symbol}
+Спред: {spread_pct:+.2f}%
+Чистая прибыль: {net_profit:.2f}%
+Покупай фьюч: {futures_ask:.8f}
+Продавай спот: {spot_bid:.8f}
+"""
+                    send_telegram(msg)
+                    self.last_signals.append({
+                        'pair': spot_symbol,
+                        'spread': spread_pct,
+                        'profit': net_profit,
+                        'time': datetime.now().strftime('%H:%M:%S')
+                    })
+                    if len(self.last_signals) > 10:
+                        self.last_signals.pop(0)
+                return spread_pct
+            else:
+                return 0
+        except Exception as e:
+            return None
+    
+    def handle_command(self, text, chat_id):
+        """Обработка команд для бота #2 (text уже без суффикса '2')"""
+        text = text.strip().lower()
+        print(f"📩 Бот #2 команда: {text}")
+        
+        if text == '/help':
+            message = f"""
+📚 <b>ПОМОЩЬ (бот #2 - сканер)</b>
+
+/stop2 - Остановить сканирование
+/resume2 - Возобновить сканирование
+/status2 - Текущий статус
+/last2 - Последние 5 сигналов
+/threshold2 0.5 - Изменить мин. спред
+/interval2 60 - Изменить интервал между циклами
+
+Текущие настройки:
+Спред > {self.min_spread_percent}%
+Интервал: {self.sleep_between_cycles} сек
+"""
+            send_telegram_to_chat(chat_id, message)
+            return True
+        
+        elif text == '/stop':
+            self.is_scanning = False
+            send_telegram_to_chat(chat_id, "⏸ СКАНИРОВАНИЕ (бот #2) ОСТАНОВЛЕНО! /resume2 - возобновить")
+            return True
+        
+        elif text == '/resume':
+            self.is_scanning = True
+            send_telegram_to_chat(chat_id, "✅ СКАНИРОВАНИЕ (бот #2) ВОЗОБНОВЛЕНО!")
+            return True
+        
+        elif text == '/status':
+            status_text = "РАБОТАЕТ ✅" if self.is_scanning else "ОСТАНОВЛЕН ⏸"
+            message = f"""
+📊 СТАТУС СКАНЕРА (бот #2)
+
+Состояние: {status_text}
+Мин. спред: {self.min_spread_percent}%
+Интервал: {self.sleep_between_cycles} сек
+Найдено сигналов: {len(self.last_signals)}
+"""
+            send_telegram_to_chat(chat_id, message)
+            return True
+        
+        elif text == '/last':
+            if self.last_signals:
+                message = "🔄 ПОСЛЕДНИЕ СИГНАЛЫ (бот #2):\n"
+                for sig in self.last_signals[-5:]:
+                    message += f"\n{sig['pair']}: {sig['spread']:.2f}% | {sig['profit']:.2f}% | {sig['time']}"
                 send_telegram_to_chat(chat_id, message)
             else:
-                message = "❌ Значение должно быть от 0.3 до 9.0"
-                send_telegram_to_chat(chat_id, message)
-        except:
-            message = "❌ Неверный формат. Пример: /target 9"
-            send_telegram_to_chat(chat_id, message)
-        return True
+                send_telegram_to_chat(chat_id, "📭 Пока нет сигналов")
+            return True
+        
+        elif text.startswith('/threshold '):
+            try:
+                val = float(text.replace('/threshold ', ''))
+                if 0.5 <= val <= 10.0:
+                    self.min_spread_percent = val
+                    send_telegram_to_chat(chat_id, f"✅ Мин. спред: {val}% | Чистая прибыль: {val - 0.15:.2f}%")
+                else:
+                    send_telegram_to_chat(chat_id, "❌ Значение от 0.5 до 10.0")
+            except:
+                send_telegram_to_chat(chat_id, "❌ Пример: /threshold2 1.5")
+            return True
+        
+        elif text.startswith('/interval '):
+            try:
+                val = int(text.replace('/interval ', ''))
+                if 10 <= val <= 300:
+                    self.sleep_between_cycles = val
+                    send_telegram_to_chat(chat_id, f"✅ Интервал: {val} сек")
+                else:
+                    send_telegram_to_chat(chat_id, "❌ Значение от 10 до 300")
+            except:
+                send_telegram_to_chat(chat_id, "❌ Пример: /interval2 60")
+            return True
+        
+        else:
+            if text.startswith('/'):
+                send_telegram_to_chat(chat_id, f"❌ Неизвестная команда для бота #2: {text}\n/help2")
+            return False
+    
+    def run(self):
+        """Основной цикл сканирования"""
+        send_telegram(f"✅ АРБИТРАЖНЫЙ СКАНЕР (бот #2) ЗАПУЩЕН!\nСпред > {self.min_spread_percent}%")
+        print(f"\n🚀 Бот #2 запущен | Мин. спред: {self.min_spread_percent}% | Интервал: {self.sleep_between_cycles} сек | Пар: {len(self.trading_pairs)}")
+        
+        cycle = 0
+        while True:
+            if not self.is_scanning:
+                time.sleep(2)
+                continue
+            try:
+                cycle += 1
+                print(f"\n🔄 Бот #2 цикл #{cycle} | {datetime.now().strftime('%H:%M:%S')}")
+                print(f"🔎 Сканирую {len(self.trading_pairs)} пар...")
+                
+                profitable_count = 0
+                for i, pair in enumerate(self.trading_pairs):
+                    if not self.is_scanning:
+                        break
+                    result = self.get_spread(pair['spot'], pair['future'])
+                    if result and result > self.min_spread_percent:
+                        profitable_count += 1
+                    if (i + 1) % 100 == 0:
+                        print(f"📊 Прогресс: {i+1}/{len(self.trading_pairs)} | Найдено: {profitable_count}", end="\r")
+                    time.sleep(0.03)
+                
+                print(f"\n✅ Цикл #{cycle} завершён. Найдено: {profitable_count}")
+                print(f"⏰ Следующий цикл через {self.sleep_between_cycles} сек...")
+                time.sleep(self.sleep_between_cycles)
+                
+            except Exception as e:
+                print(f"❌ Бот #2 ошибка: {e}")
+                time.sleep(10)
 
-    elif text.startswith('/interval '):
-        try:
-            new_interval = int(text.replace('/interval ', ''))
-            if 5 <= new_interval <= 600:
-                CHECK_INTERVAL = new_interval
-                message = f"✅ Интервал изменен: {CHECK_INTERVAL} сек"
-                send_telegram_to_chat(chat_id, message)
-            else:
-                message = "❌ Значение должно быть от 5 до 600"
-                send_telegram_to_chat(chat_id, message)
-        except:
-            message = "❌ Неверный формат. Пример: /interval 30"
-            send_telegram_to_chat(chat_id, message)
-        return True
-
-    else:
-        if text.startswith('/'):
-            send_telegram_to_chat(chat_id, f"❌ Неизвестная команда: {text}\n/help", reply_markup=main_keyboard)
-        return False
-
-def telegram_polling():
+# ========== ГЛАВНЫЙ ОБРАБОТЧИК ТЕЛЕГРАМ (РАЗДЕЛЯЕТ КОМАНДЫ) ==========
+def telegram_polling(bot1, bot2):
     update_id = None
-    while bot_running:
+    while True:
         try:
             updates = get_updates(update_id)
             for update in updates:
@@ -308,109 +611,33 @@ def telegram_polling():
                     chat_id = message['chat']['id']
                     text = message.get('text', '')
                     if text.startswith('/'):
-                        handle_command(text, chat_id)
+                        # Определяем суффикс
+                        if text.endswith('1'):
+                            cmd = text[:-1]  # убираем '1'
+                            bot1.handle_command(cmd, chat_id)
+                        elif text.endswith('2'):
+                            cmd = text[:-1]  # убираем '2'
+                            bot2.handle_command(cmd, chat_id)
+                        else:
+                            # Без суффикса – подскажем
+                            send_telegram_to_chat(chat_id, "❌ Используйте команды с суффиксом 1 или 2.\nПример: /start1 или /help2")
             time.sleep(1)
         except Exception as e:
             print(f"❌ Ошибка в polling: {e}")
             time.sleep(5)
 
-# ==================================================
-# ПОДКЛЮЧЕНИЕ К БИРЖЕ И ОСНОВНОЙ КОД
-# ==================================================
-
-print("🚀 ЗАПУСК АРБИТРАЖНОГО БОТА MEXC")
-print("="*50)
-print("📡 Подключение к MEXC...")
-
-exchange = ccxt.mexc({'enableRateLimit': True})
-print("📡 Загрузка рынков...")
-exchange.load_markets()
-print("✅ Биржа подключена!")
-
-def get_spread():
-    try:
-        spot = exchange.fetch_order_book(SPOT_SYMBOL)
-        future = exchange.fetch_order_book(FUTURES_SYMBOL)
-        spot_ask = spot['asks'][0][0]
-        spot_bid = spot['bids'][0][0]
-        future_bid = future['bids'][0][0]
-        future_ask = future['asks'][0][0]
-        spread_long = ((future_bid - spot_ask) / spot_ask) * 100
-        spread_short = ((spot_bid - future_ask) / future_ask) * 100
-        if spread_long > spread_short:
-            return {
-                'spread': spread_long,
-                'action': 'Купить СПОТ → Продать ФЬЮЧЕРС',
-                'buy_price': spot_ask,
-                'sell_price': future_bid
-            }
-        else:
-            return {
-                'spread': spread_short,
-                'action': 'Купить ФЬЮЧЕРС → Продать СПОТ',
-                'buy_price': future_ask,
-                'sell_price': spot_bid
-            }
-    except Exception as e:
-        print(f"❌ Ошибка получения спреда: {e}")
-        return None
-
-# Запускаем Telegram polling
-telegram_thread = threading.Thread(target=telegram_polling, daemon=True)
-telegram_thread.start()
-
-send_telegram(f"✅ АРБИТРАЖНЫЙ БОТ ЗАПУЩЕН!\n\n📊 Слежу за {SPOT_SYMBOL}\n🎯 Цель: {TARGET_SPREAD_PERCENT}%\n\n💡 /set ЛЮБАЯ_МОНЕТА - сменить пару\n📋 /help - все команды")
-
-print(f"\n📊 Текущая пара: {SPOT_SYMBOL}")
-print(f"🎯 Цель: {TARGET_SPREAD_PERCENT}%")
-print(f"⏰ Интервал: {CHECK_INTERVAL} сек")
-print("="*50)
-print(f"\n📊 Начинаю отслеживание...")
-print("="*50)
-
-# ==================================================
-# ОСНОВНОЙ ЦИКЛ
-# ==================================================
-
-while True:
-    try:
-        data = get_spread()
-        if data:
-            current_spread_data = data
-            spread = data['spread']
-            now = datetime.now().strftime('%H:%M:%S')
-            spread_history.append(spread)
-            if len(spread_history) > 20:
-                spread_history.pop(0)
-            print(f"🕐 {now} | {SPOT_SYMBOL} | Спред: {spread:+.2f}%", end="")
-            if spread <= TARGET_SPREAD_PERCENT:
-                print(" 🎯 ЦЕЛЬ ДОСТИГНУТА!")
-                if last_alert != "target":
-                    profit = spread - 0.15
-                    msg = f"""
-🎯 <b>ЦЕЛЬ ДОСТИГНУТА!</b> 🎯
-━━━━━━━━━━━━━━━━━━━━━
-📊 {SPOT_SYMBOL}
-📈 <b>Спред:</b> {spread:+.2f}%
-💰 <b>Чистая прибыль:</b> {profit:.2f}%
-⚡ {data['action']}
-━━━━━━━━━━━━━━━━━━━━━
-⚡ ДЕЙСТВУЙТЕ БЫСТРО!
-"""
-                    send_telegram(msg)
-                    last_alert = "target"
-            else:
-                need = spread - TARGET_SPREAD_PERCENT
-                print(f" | Нужно снижение: {need:.2f}%")
-                for level in ALERT_LEVELS:
-                    if spread <= level and last_alert != level:
-                        msg = f"🔔 {SPOT_SYMBOL}\nСпред снизился до {level}%\nТекущий: {spread:+.2f}%\nОсталось до цели: {need:.2f}%"
-                        send_telegram(msg)
-                        last_alert = level
-                        break
-                if spread > max(ALERT_LEVELS) + 0.3:
-                    last_alert = None
-        time.sleep(CHECK_INTERVAL)
-    except Exception as e:
-        print(f"❌ Ошибка: {e}")
-        time.sleep(CHECK_INTERVAL)
+# ========== ЗАПУСК ВСЕГО ==========
+if __name__ == "__main__":
+    # Health check сервер в отдельном потоке
+    threading.Thread(target=run_health_server, daemon=True).start()
+    
+    # Создаём экземпляры ботов
+    bot1 = ArbitrageBot(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID)
+    bot2 = ScannerBot(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID)
+    
+    # Запускаем циклы ботов в отдельных потоках
+    threading.Thread(target=bot1.run, daemon=True).start()
+    threading.Thread(target=bot2.run, daemon=True).start()
+    
+    # Запускаем обработчик команд Telegram в главном потоке
+    telegram_polling(bot1, bot2)
