@@ -3,9 +3,7 @@ import time
 from datetime import datetime
 import requests
 import threading
-import re
 import os
-import sys
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # ========== ДЛЯ RENDER / UPTIMEROBOT (HEALTH CHECK) ==========
@@ -32,8 +30,31 @@ threading.Thread(target=run_health_server, daemon=True).start()
 # НАСТРОЙКИ ТЕЛЕГРАМ (ОБЩИЕ)
 # ==================================================
 TELEGRAM_TOKEN = "8751313465:AAEKdudEaxKwNcwpB2FSThSRkut7L4KRvSI"
-TELEGRAM_CHAT_ID = "1540385721"
+TELEGRAM_CHAT_ID = "1540385721"  # Ваш личный ID (для уведомлений)
 ENABLE_TELEGRAM = True
+
+# ========== ЗАЩИТА ПАРОЛЕМ ==========
+SECRET_PASSWORD = "MySecretPass123"   # Смените на свой пароль
+authorized_users = set()              # Хранит ID авторизованных пользователей
+pending_password = {}                 # {chat_id: ожидание ввода пароля}
+
+def is_authorized(chat_id):
+    return chat_id in authorized_users
+
+def start_password_flow(chat_id):
+    pending_password[chat_id] = True
+    send_telegram_to_chat(chat_id, "🔐 Введите пароль для доступа к боту:")
+
+def check_password(chat_id, text):
+    if text == SECRET_PASSWORD:
+        authorized_users.add(chat_id)
+        pending_password.pop(chat_id, None)
+        send_telegram_to_chat(chat_id, "✅ Доступ разрешён! Теперь вы можете пользоваться ботом.\nОтправьте /start1 для первого бота или /help2 для второго.")
+        return True
+    else:
+        send_telegram_to_chat(chat_id, "❌ Неверный пароль. Доступ запрещён.\nПопробуйте снова командой /register")
+        pending_password.pop(chat_id, None)
+        return False
 
 # ==================================================
 # ПЕРВЫЙ БОТ (АРБИТРАЖ ПО ОДНОЙ ПАРЕ) – БЕЗ ИЗМЕНЕНИЙ
@@ -613,7 +634,7 @@ class ScannerBot:
                 time.sleep(10)
 
 # ==================================================
-# ГЛАВНЫЙ ОБРАБОТЧИК ТЕЛЕГРАМ (ИСПРАВЛЕННЫЙ)
+# ГЛАВНЫЙ ОБРАБОТЧИК ТЕЛЕГРАМ (С ПРОВЕРКОЙ ПАРОЛЯ)
 # ==================================================
 def telegram_polling(bot2):
     global bot1_running
@@ -627,6 +648,21 @@ def telegram_polling(bot2):
                     message = update['message']
                     chat_id = message['chat']['id']
                     text = message.get('text', '')
+                    
+                    # --- Обработка ввода пароля (если пользователь в режиме ожидания) ---
+                    if chat_id in pending_password:
+                        check_password(chat_id, text)
+                        continue
+                    
+                    # --- Проверка авторизации (кроме команды /register) ---
+                    if not is_authorized(chat_id):
+                        if text.startswith('/register'):
+                            start_password_flow(chat_id)
+                        else:
+                            send_telegram_to_chat(chat_id, "🔐 Доступ запрещён. Для использования бота отправьте команду /register и введите пароль.")
+                        continue
+                    
+                    # --- Обработка команд ---
                     if text.startswith('/'):
                         # Глобальные команды для обоих ботов
                         if text == '/start':
@@ -642,26 +678,19 @@ def telegram_polling(bot2):
                         
                         # Разделяем команду на имя и аргументы
                         parts = text.split()
-                        cmd_name = parts[0]  # например "/threshold2" или "/stop2"
+                        cmd_name = parts[0]
                         args = ' '.join(parts[1:]) if len(parts) > 1 else ''
                         
-                        # Проверяем суффикс команды
                         if cmd_name.endswith('2'):
-                            base_cmd = cmd_name[:-1]  # убираем '2'
-                            if args:
-                                full_cmd = f"{base_cmd} {args}"
-                            else:
-                                full_cmd = base_cmd
+                            base_cmd = cmd_name[:-1]
+                            full_cmd = f"{base_cmd} {args}".strip()
                             bot2.handle_command(full_cmd, chat_id)
                         elif cmd_name.endswith('1'):
                             base_cmd = cmd_name[:-1]
-                            if args:
-                                full_cmd = f"{base_cmd} {args}"
-                            else:
-                                full_cmd = base_cmd
+                            full_cmd = f"{base_cmd} {args}".strip()
                             handle_command_bot1(full_cmd, chat_id)
                         else:
-                            # Команда без суффикса – отдаём первому боту
+                            # Команда без суффикса – первому боту
                             handle_command_bot1(text, chat_id)
             time.sleep(1)
         except Exception as e:
