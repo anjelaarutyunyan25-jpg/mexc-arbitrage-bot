@@ -3,7 +3,9 @@ import time
 from datetime import datetime
 import requests
 import threading
+import re
 import os
+import sys
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # ========== ДЛЯ RENDER / UPTIMEROBOT (HEALTH CHECK) ==========
@@ -34,7 +36,7 @@ TELEGRAM_CHAT_ID = "1540385721"  # Ваш личный ID (для уведомл
 ENABLE_TELEGRAM = True
 
 # ========== ЗАЩИТА ПАРОЛЕМ ==========
-SECRET_PASSWORD = "1983"   # Смените на свой пароль
+SECRET_PASSWORD = "MySecretPass123"   # Смените на свой пароль
 authorized_users = set()              # Хранит ID авторизованных пользователей
 pending_password = {}                 # {chat_id: ожидание ввода пароля}
 
@@ -57,15 +59,14 @@ def check_password(chat_id, text):
         return False
 
 # ==================================================
-# ПЕРВЫЙ БОТ (АРБИТРАЖ ПО ОДНОЙ ПАРЕ) – БЕЗ ИЗМЕНЕНИЙ
+# ПЕРВЫЙ БОТ (АРБИТРАЖ ПО ОДНОЙ ПАРЕ) – ByBit
 # ==================================================
-
 # Глобальные переменные первого бота
 spot_symbol = "BTC/USDT"
-futures_symbol = "BTC/USDT:USDT"
-target_spread_percent = 5
+futures_symbol = "BTC/USDT:USDT"  # !!! ФОРМАТ ДЛЯ ФЬЮЧЕРСОВ
+target_spread_percent = 0.5       # Целевой спред (%) — для Bybit стоит меньше
 check_interval = 120
-alert_levels = [1.0, 0.8, 0.6, 0.5]
+alert_levels = [0.4, 0.3, 0.2, 0.1]
 
 last_alert = None
 current_spread_data = None
@@ -136,7 +137,7 @@ def handle_command_bot1(text, chat_id):
 
     if text == '/start':
         message = f"""
-🤖 <b>АРБИТРАЖНЫЙ БОТ MEXC</b>
+🤖 <b>АРБИТРАЖНЫЙ БОТ ByBit</b>
 
 📊 <b>Текущая пара:</b> {spot_symbol}
 🎯 <b>Цель:</b> {target_spread_percent}%
@@ -173,7 +174,7 @@ def handle_command_bot1(text, chat_id):
 
     elif text == '/pairs':
         message = """
-📋 <b>ПОПУЛЯРНЫЕ ПАРЫ НА MEXC</b>
+📋 <b>ПОПУЛЯРНЫЕ ПАРЫ НА ByBit</b>
 
 Основные: BTC, ETH, SOL, XRP, DOGE, ADA
 Альткоины: MATIC, DOT, AVAX, LINK, LTC, UNI
@@ -228,9 +229,9 @@ def handle_command_bot1(text, chat_id):
             fut_ok = futures_symbol in exchange.markets and exchange.markets[futures_symbol].get('active')
             coin = spot_symbol.replace('/USDT', '')
             if spot_ok and fut_ok:
-                spot = exchange.fetch_order_book(spot_symbol)
-                fut = exchange.fetch_order_book(futures_symbol)
-                spread = ((fut['bids'][0][0] - spot['asks'][0][0]) / spot['asks'][0][0]) * 100
+                spot_book = exchange.fetch_order_book(spot_symbol)
+                fut_book = exchange.fetch_order_book(futures_symbol)
+                spread = ((fut_book['bids'][0][0] - spot_book['asks'][0][0]) / spot_book['asks'][0][0]) * 100
                 message = f"✅ Пара {coin} активна\nСпред: {spread:+.2f}%\nЦель: {target_spread_percent}%"
                 if spread <= target_spread_percent:
                     profit = spread - 0.15
@@ -318,15 +319,24 @@ def bot1_loop():
     global exchange, current_spread_data, last_alert, spread_history, bot1_running
     global spot_symbol, futures_symbol, target_spread_percent, check_interval, alert_levels
 
-    print("🚀 ЗАПУСК АРБИТРАЖНОГО БОТА MEXC (БОТ №1)")
+    print("🚀 ЗАПУСК АРБИТРАЖНОГО БОТА ByBit (БОТ №1)")
     print("="*50)
-    print("📡 Подключение к MEXC...")
-    exchange = ccxt.mexc({'enableRateLimit': True})
+    print("📡 Подключение к ByBit...")
+    
+    # --- ОСНОВНОЕ ИЗМЕНЕНИЕ: НАСТРОЙКИ ДЛЯ ФЬЮЧЕРСОВ ---
+    exchange = ccxt.bybit({
+        'enableRateLimit': True,
+        'options': {
+            'defaultType': 'swap',   # 'swap' для бессрочных фьючерсов
+            'defaultSubType': 'linear', # USDT-маржинальные контракты
+            'defaultSettle': 'USDT'
+        }
+    })
     print("📡 Загрузка рынков...")
     exchange.load_markets()
-    print("✅ Биржа подключена!")
+    print("✅ Биржа ByBit подключена!")
 
-    send_telegram(f"✅ АРБИТРАЖНЫЙ БОТ ЗАПУЩЕН!\n\n📊 Слежу за {spot_symbol}\n🎯 Цель: {target_spread_percent}%\n\n💡 /set ЛЮБАЯ_МОНЕТА - сменить пару\n📋 /help - все команды")
+    send_telegram(f"✅ АРБИТРАЖНЫЙ БОТ (ByBit) ЗАПУЩЕН!\n\n📊 Слежу за {spot_symbol}\n🎯 Цель: {target_spread_percent}%\n\n💡 /set ЛЮБАЯ_МОНЕТА - сменить пару\n📋 /help - все команды")
 
     print(f"\n📊 Текущая пара: {spot_symbol}")
     print(f"🎯 Цель: {target_spread_percent}%")
@@ -410,17 +420,24 @@ def bot1_loop():
             time.sleep(check_interval)
 
 # ==================================================
-# ВТОРОЙ БОТ (СКАНЕР ВСЕХ ПАР) – КОМАНДЫ С СУФФИКСОМ 2
+# ВТОРОЙ БОТ (СКАНЕР ВСЕХ ПАР) – ByBit, С СУФФИКСОМ 2
 # ==================================================
 class ScannerBot:
     def __init__(self, token, default_chat_id):
         self.token = token
         self.default_chat_id = default_chat_id
-        self.exchange = ccxt.mexc({'enableRateLimit': True})
-        print("📡 Бот #2: загрузка рынков...")
+        # --- ВАЖНО: Настройки для сканера ByBit ---
+        self.exchange = ccxt.bybit({
+            'enableRateLimit': True,
+            'options': {
+                'defaultType': 'swap',   # для работы с фьючерсами
+                'defaultSubType': 'linear'
+            }
+        })
+        print("📡 Бот #2: загрузка рынков ByBit...")
         self.exchange.load_markets()
         
-        self.min_spread_percent = 2
+        self.min_spread_percent = 0.5   # для ByBit спреды меньше
         self.sleep_between_cycles = 10
         self.is_scanning = True
         self.last_signals = []
@@ -429,6 +446,7 @@ class ScannerBot:
         spot_pairs = []
         for symbol in self.exchange.markets:
             market = self.exchange.markets[symbol]
+            # Отбираем только активные спотовые пары USDT
             if symbol.endswith('/USDT') and market.get('spot') and market.get('active'):
                 spot_pairs.append(symbol)
         print(f"📈 Спотовых пар: {len(spot_pairs)}")
@@ -437,7 +455,11 @@ class ScannerBot:
         for spot in spot_pairs:
             base = spot.replace('/USDT', '')
             future = f"{base}/USDT:USDT"
-            self.trading_pairs.append({'spot': spot, 'future': future, 'base': base})
+            # Проверяем, что фьючерсный контракт существует на бирже
+            if future in self.exchange.markets:
+                self.trading_pairs.append({'spot': spot, 'future': future, 'base': base})
+            else:
+                print(f"⚠️ Пропускаем {spot}: фьючерс {future} не найден")
         print(f"🔄 Пар для сканирования: {len(self.trading_pairs)}")
         
     def get_spread(self, spot_symbol, futures_symbol):
@@ -522,7 +544,7 @@ class ScannerBot:
         
         if text == '/help':
             message = f"""
-📚 <b>ПОМОЩЬ (бот #2 - сканер)</b>
+📚 <b>ПОМОЩЬ (бот #2 - сканер ByBit)</b>
 
 /start2 - Запустить сканирование
 /stop2 - Остановить сканирование
@@ -574,25 +596,25 @@ class ScannerBot:
         elif text.startswith('/threshold '):
             try:
                 val = float(text.replace('/threshold ', ''))
-                if 0.5 <= val <= 10.0:
+                if 0.2 <= val <= 9.0:  # Диапазон для ByBit
                     self.min_spread_percent = val
                     send_telegram_to_chat(chat_id, f"✅ Мин. спред: {val}% | Чистая прибыль: {val - 0.15:.2f}%")
                 else:
-                    send_telegram_to_chat(chat_id, "❌ Значение от 0.5 до 10.0")
+                    send_telegram_to_chat(chat_id, "❌ Значение от 0.2 до 9.0")
             except:
-                send_telegram_to_chat(chat_id, "❌ Пример: /threshold2 1.5")
+                send_telegram_to_chat(chat_id, "❌ Пример: /threshold2 0.5")
             return True
         
         elif text.startswith('/interval '):
             try:
                 val = int(text.replace('/interval ', ''))
-                if 10 <= val <= 300:
+                if 5 <= val <= 300:  # Можно проверять чаще
                     self.sleep_between_cycles = val
                     send_telegram_to_chat(chat_id, f"✅ Интервал: {val} сек")
                 else:
-                    send_telegram_to_chat(chat_id, "❌ Значение от 10 до 300")
+                    send_telegram_to_chat(chat_id, "❌ Значение от 5 до 300")
             except:
-                send_telegram_to_chat(chat_id, "❌ Пример: /interval2 60")
+                send_telegram_to_chat(chat_id, "❌ Пример: /interval2 30")
             return True
         
         else:
@@ -601,7 +623,7 @@ class ScannerBot:
             return False
     
     def run(self):
-        send_telegram(f"✅ АРБИТРАЖНЫЙ СКАНЕР (бот #2) ЗАПУЩЕН!\nСпред > {self.min_spread_percent}%")
+        send_telegram(f"✅ АРБИТРАЖНЫЙ СКАНЕР ByBit (бот #2) ЗАПУЩЕН!\nСпред > {self.min_spread_percent}%")
         print(f"\n🚀 Бот #2 запущен | Мин. спред: {self.min_spread_percent}% | Интервал: {self.sleep_between_cycles} сек | Пар: {len(self.trading_pairs)}")
         
         cycle = 0
