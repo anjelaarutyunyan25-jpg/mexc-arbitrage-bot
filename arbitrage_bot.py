@@ -286,34 +286,69 @@ def bot1_bybit_loop():
             time.sleep(bybit_interval)
 
 # ==================================================
-# СКАНЕР MEXC
+# СКАНЕР MEXC (ИСПРАВЛЕННАЯ ВЕРСИЯ)
 # ==================================================
 def load_mexc_pairs():
     global exchange_mexc
-    exchange_mexc.load_markets()
-    spot_pairs = [s for s in exchange_mexc.markets if s.endswith('/USDT') and exchange_mexc.markets[s].get('spot') and exchange_mexc.markets[s].get('active')]
+    # Ждём загрузки маркетов (максимум 30 секунд)
+    timeout = 30
+    start = time.time()
+    while not exchange_mexc.markets and time.time() - start < timeout:
+        print("⏳ MEXC: ожидание загрузки маркетов...")
+        time.sleep(2)
+        try:
+            exchange_mexc.load_markets()
+        except:
+            pass
+    if not exchange_mexc.markets:
+        print("❌ MEXC: не удалось загрузить маркеты")
+        return []
+
+    spot_pairs = []
+    for s in exchange_mexc.markets:
+        if s.endswith('/USDT') and exchange_mexc.markets[s].get('spot'):
+            spot_pairs.append(s)
+
     trading_pairs = []
     for spot in spot_pairs:
         base = spot.replace('/USDT', '')
         future = f"{base}/USDT:USDT"
         if future in exchange_mexc.markets:
             trading_pairs.append({'spot': spot, 'future': future})
+    print(f"✅ MEXC: загружено {len(trading_pairs)} спот-фьюч пар")
     return trading_pairs
 
 def bot2_mexc_loop():
     global bot2_mexc_running, mexc_min_spread, mexc_scan_interval, mexc_last_signals, exchange_mexc
-    print("🚀 Запуск сканера MEXC")
-    send_telegram("✅ Сканер MEXC запущен")
-    exchange_mexc = exchange_mexc or ccxt.mexc({'enableRateLimit': True})
+    print("🚀 Запуск сканера MEXC (исправленная версия)")
+    send_telegram("✅ Сканер MEXC запущен (исправлен)")
+    # Убеждаемся, что exchange_mexc инициализирован
+    if exchange_mexc is None:
+        exchange_mexc = ccxt.mexc({'enableRateLimit': True})
+    # Принудительно загружаем маркеты перед началом
+    try:
+        exchange_mexc.load_markets()
+    except Exception as e:
+        print(f"MEXC предварительная загрузка markets: {e}")
+    # Получаем список пар
     trading_pairs = load_mexc_pairs()
+    if not trading_pairs:
+        print("⚠️ MEXC: список пар пуст, сканер будет ждать и повторять попытку")
     cycle = 0
     while True:
         if not bot2_mexc_running:
             time.sleep(2)
             continue
         try:
+            # Если список пар всё ещё пуст – перезагружаем
+            if not trading_pairs:
+                print("MEXC: перезагрузка списка пар...")
+                trading_pairs = load_mexc_pairs()
+                if not trading_pairs:
+                    time.sleep(10)
+                    continue
             cycle += 1
-            print(f"MEXC сканер цикл {cycle}, пар: {len(trading_pairs)}")
+            print(f"MEXC сканер цикл {cycle}, пар в обработке: {len(trading_pairs)}")
             for pair in trading_pairs:
                 try:
                     spot = exchange_mexc.fetch_order_book(pair['spot'])
@@ -342,7 +377,8 @@ def bot2_mexc_loop():
                             send_telegram(msg)
                             mexc_last_signals.append({'pair': pair['spot'], 'spread': spread, 'time': datetime.now().strftime('%H:%M:%S')})
                             if len(mexc_last_signals) > 10: mexc_last_signals.pop(0)
-                except:
+                except Exception as e:
+                    # Тихая обработка ошибок по одной паре, чтобы не заваливать лог
                     pass
                 time.sleep(0.03)
             time.sleep(mexc_scan_interval)
@@ -351,7 +387,7 @@ def bot2_mexc_loop():
             time.sleep(10)
 
 # ==================================================
-# СКАНЕР BYBIT
+# СКАНЕР BYBIT (без изменений, рабочий)
 # ==================================================
 def load_bybit_pairs():
     global exchange_bybit
@@ -787,7 +823,7 @@ def handle_commands():
 # ==================================================
 if __name__ == "__main__":
     print("="*60)
-    print("ОБЪЕДИНЁННЫЙ АРБИТРАЖНЫЙ БОТ (MEXC + ByBit) – БЕЗ ПАРОЛЯ, С ЦЕНАМИ В СИГНАЛАХ")
+    print("ОБЪЕДИНЁННЫЙ АРБИТРАЖНЫЙ БОТ (MEXC + ByBit) – ИСПРАВЛЕН СКАНЕР MEXC")
     print("="*60)
     exchange_mexc = ccxt.mexc({'enableRateLimit': True})
     exchange_bybit = ccxt.bybit({'enableRateLimit': True, 'options': {'defaultType': 'swap'}})
